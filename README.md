@@ -21,7 +21,7 @@ Code, Codex, or your own.
 ## Quick start
 
 ```bash
-npx @mora/cli init
+npx @moralabs/cli init
 ```
 
 That walks you through naming the project and picking a data source, then writes

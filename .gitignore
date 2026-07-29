@@ -12,3 +12,6 @@ coverage/
 .tmp/
 *.duckdb
 *.duckdb.wal
+
+# Mora
+.mora/
