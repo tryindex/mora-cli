@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Local scratch space used when testing the CLI by hand
+.tmp/
+*.duckdb
+*.duckdb.wal

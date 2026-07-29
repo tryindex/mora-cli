@@ -1,0 +1,60 @@
+{
+  "name": "@mora/cli",
+  "version": "0.1.0",
+  "description": "Agent-first framework to build and manage a Malloy semantic layer for trusted queries",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mora": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tryindex/mora.git"
+  },
+  "homepage": "https://github.com/tryindex/mora#readme",
+  "bugs": {
+    "url": "https://github.com/tryindex/mora/issues"
+  },
+  "keywords": [
+    "malloy",
+    "semantic-layer",
+    "cli",
+    "agents",
+    "analytics",
+    "text-to-sql"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.7.0",
+    "@malloydata/db-duckdb": "^0.0.426",
+    "@malloydata/malloy": "^0.0.426",
+    "commander": "^15.0.0",
+    "picocolors": "^1.1.1",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.6",
+    "@types/node": "^22.10.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.10"
+  }
+}

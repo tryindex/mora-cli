@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['20.x', '22.x', '24.x']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - run: npm run build
+
+      # The scaffold is the product, so verify it end to end: a fresh project
+      # must be written and its example model must compile against DuckDB.
+      - name: Smoke test mora init
+        run: |
+          node dist/cli.js init "$RUNNER_TEMP/smoke" --yes --json | tee result.json
+          node -e "
+            const r = require('./result.json');
+            if (!r.ok) throw new Error('init reported failure');
+            if (r.compile.status !== 'passed') throw new Error('compile check did not pass: ' + JSON.stringify(r.compile));
+          "
