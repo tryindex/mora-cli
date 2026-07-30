@@ -15,8 +15,8 @@ by reading a few lines of a model instead of auditing a wall of SQL.
 Mora is a CLI, so any agent that can run a command can use it: Cursor, Claude
 Code, Codex, or your own.
 
-> **Status: early.** `mora init`, `mora connection`, `mora validate`, `mora describe`
-> and `mora query` work against DuckDB and BigQuery today. See
+> **Status: early.** `mora init`, `mora upgrade`, `mora connection`, `mora validate`,
+> `mora describe` and `mora query` work against DuckDB and BigQuery today. See
 > [Roadmap](#roadmap) for what is next.
 
 ## Quick start
@@ -301,24 +301,50 @@ npx @moradata/cli init
 ```
 
 That copies `.env.example` to a gitignored `.env`, tells you which credentials are
-still empty, refreshes the docs Mora owns in `.agents/`, and compiles the committed
-models so you know the checkout works before you touch anything. Models, `mora.yaml`
-and your team's own writing are read-only to it. Exit code `0` means ready to use;
-`1` means a credential is unset or a model failed to compile, and the report says
-which.
+still empty, notes when the project needs `mora upgrade` (or a newer CLI), and
+compiles the committed models so you know the checkout works before you touch
+anything. Models, `mora.yaml` and your team's own writing are read-only to it.
+Exit code `0` means ready to use; `1` means a credential is unset or a model
+failed to compile, and the report says which.
 
 The `.env.example` is generated from the connections in `mora.yaml`, so the list of
 required variables comes from the project rather than from a README someone has to
 remember to update. Pass `--force` if you really do want to re-scaffold.
 
+## Updating
+
+Updating is two steps. The binary and the project are versioned separately on
+purpose: teammates upgrade the project through a pull request, like any other
+change to the semantic layer.
+
+1. **Update the binary.** One-off: `npx @moradata/cli@latest …`. Installed:
+   `npm i -g @moradata/cli@latest`. Mora also prints a one-line nudge on stderr
+   when a newer version is on npm (cached for a day; silent under `--json`, `CI`,
+   or `MORA_NO_UPDATE_CHECK`).
+2. **Update the project.** In the checkout, run:
+
+```bash
+mora upgrade
+```
+
+That refreshes `.agents/malloy.md` and `.agents/mora.md`, rewrites the managed
+block in `AGENTS.md`, applies any `mora.yaml` migrations, and stamps
+`cli_version` in `mora.yaml`. Review the diff and commit it. `--check` reports
+whether an upgrade is pending without writing (exit `0` when current, `1` when
+pending), which is the form CI should use.
+
+The stamp is the project's source of truth for which Mora the team is on. A
+teammate whose CLI is *older* than the stamp is told to update the binary rather
+than silently rewriting committed docs backwards. A missing stamp (projects
+scaffolded before this existed) is treated as an upgrade pending.
+
 ### What Mora owns, and what you own
 
-Guidance for agents is split by who maintains it, so upgrading the CLI never
-argues with a rule your team wrote:
+Guidance for agents is split by who maintains it, so upgrading never argues with
+a rule your team wrote:
 
 - `.agents/malloy.md` and `.agents/mora.md` belong to Mora. They are replaced
-  wholesale on every `mora init`, which is what keeps a checkout from being frozen
-  at whichever version of the guidance scaffolded it. Don't edit them.
+  wholesale by `mora upgrade`. Don't edit them.
 - `AGENTS.md` is shared. Mora maintains the part between its
   `mora:begin`/`mora:end` markers and scaffolds a `## Team conventions` section
   below it. Anything outside the markers is yours and survives upgrades.
@@ -326,8 +352,9 @@ argues with a rule your team wrote:
 The same split applies to configuration: `mora.yaml`, `publisher.config.json` and
 `metrics/publisher.json` are scaffolded once and then belong to the project, so
 adding a connection or an environment is never undone by a later `mora init`.
-`mora connection add` is the exception that proves it — it edits `mora.yaml` as a
-document, leaving every comment and every other connection where they were.
+`mora connection add` and `mora upgrade` are the exceptions that prove it — they
+edit `mora.yaml` as a document, leaving every comment and every other connection
+where they were.
 
 ## What a model looks like
 
@@ -386,6 +413,21 @@ Mora and Publisher resolve from, so the same `.malloy` file works in the CLI, in
 the VS Code Malloy extension, and on a server. `publisher.config.json` is yours
 once written — add warehouse connections and environments to it freely; Mora
 scaffolds it and then leaves it alone.
+
+## `mora upgrade`
+
+```
+Usage: mora upgrade [options] [directory]
+
+Options:
+  --check              report whether an upgrade is pending without writing
+  -y, --yes            run without prompting (implied by --json)
+  --json               print a machine-readable result instead of prose
+```
+
+See [Updating](#updating) for the two-step pattern. `--json` reports
+`{ ok, command, status, fromVersion, toVersion, configVersion, migrations,
+files, nextSteps }`.
 
 ## Roadmap
 

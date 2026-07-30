@@ -4,7 +4,7 @@ import path from 'node:path';
 import * as prompts from '@clack/prompts';
 import type { Command } from 'commander';
 import pc from 'picocolors';
-import { isDuckDbConnection, loadConfig, type MoraConfig } from '../config.js';
+import { loadConfig, type MoraConfig } from '../config.js';
 import { DATABASE_IDS, DATABASES, type DatabaseId, isDatabaseId } from '../databases.js';
 import {
   describeEnvironment,
@@ -16,9 +16,7 @@ import {
 import { ExitCode, MoraError } from '../errors.js';
 import { type CompileResult, compileModel } from '../malloy/compile.js';
 import {
-  AGENT_DOCS_DIR,
   assertConfigParses,
-  buildAgentDocs,
   buildScaffold,
   CONFIG_FILENAME,
   DUCKDB_CONNECTION_NAME,
@@ -30,6 +28,8 @@ import {
   writeScaffold,
 } from '../scaffold.js';
 import { renderEnvFile } from '../templates/env.js';
+import { CLI_VERSION, PACKAGE_NAME } from '../version.js';
+import { assessUpgrade, type UpgradeStatus } from './upgrade.js';
 import { count, type ProjectValidation, printModelResults, validateProject } from './validate.js';
 
 const DEFAULT_MODELS_DIR = 'metrics';
@@ -75,6 +75,16 @@ export interface JoinReport extends ProjectValidation {
   };
   files: WrittenFile[];
   environment: EnvironmentReport;
+  /**
+   * How the running CLI compares to the project's `cli_version` stamp.
+   * Join mode never rewrites Mora-owned docs; it points at `mora upgrade`.
+   */
+  upgrade: {
+    status: UpgradeStatus;
+    projectVersion: string | null;
+    cliVersion: string;
+    message: string;
+  };
   nextSteps: string[];
 }
 
@@ -99,10 +109,10 @@ export function registerInitCommand(program: Command): void {
 Two modes:
   In a directory without ${CONFIG_FILENAME}, init scaffolds a new semantic layer. In a
   directory that already has one, it joins that project instead: it creates a local
-  ${ENV_FILENAME} from ${ENV_EXAMPLE_FILENAME}, reports which credentials are still missing, refreshes
-  Mora's own docs in ${AGENT_DOCS_DIR}/, and compiles the committed models. Nothing the team
-  owns is changed. That is what a teammate runs after cloning. Pass --force to
-  scaffold over an existing project.
+  ${ENV_FILENAME} from ${ENV_EXAMPLE_FILENAME}, reports which credentials are still
+  missing, notes when \`mora upgrade\` (or a newer CLI) is needed, and compiles the
+  committed models. Nothing the team owns is changed. That is what a teammate runs
+  after cloning. Pass --force to scaffold over an existing project.
 
 Agent usage:
   Pass --yes (or --json) to run without prompts. Exit codes: ${ExitCode.ok} success,
@@ -191,8 +201,9 @@ async function runScaffold(
 
 /**
  * Sets up a checkout of a project someone else built and committed. Nothing the
- * team owns is written: this creates the gitignored .env and refreshes the docs
- * under `.agents/` that Mora writes itself.
+ * team owns is written: this creates the gitignored .env. Mora-owned docs are
+ * refreshed by `mora upgrade`, not here, so a teammate on an older CLI cannot
+ * silently rewrite committed guidance backwards.
  */
 async function runJoin(root: string, flags: InitFlags): Promise<JoinReport> {
   const prose = !flags.json;
@@ -202,15 +213,21 @@ async function runJoin(root: string, flags: InitFlags): Promise<JoinReport> {
     prompts.intro(pc.bgCyan(pc.black(' mora init ')));
     prompts.log.info(
       `Found an existing semantic layer in ${pc.cyan(CONFIG_FILENAME)}, so this is a setup run.\n` +
-        `Your models and configuration are left exactly as they are; only ${ENV_FILENAME} and\n` +
-        `Mora's own docs in ${AGENT_DOCS_DIR}/ are written.`,
+        `Your models and configuration are left exactly as they are; only ${ENV_FILENAME} is written.`,
     );
   }
 
   const files: WrittenFile[] = [];
   const envFile = await ensureEnvFile(config);
   if (envFile) files.push(envFile);
-  files.push(...(await refreshAgentDocs(config)));
+
+  const upgradeStatus = assessUpgrade(config);
+  const upgrade = {
+    status: upgradeStatus,
+    projectVersion: config.cliVersion ?? null,
+    cliVersion: CLI_VERSION,
+    message: upgradeMessage(upgradeStatus, config.cliVersion),
+  };
 
   const environment = describeEnvironment(
     config.requiredEnvVars,
@@ -235,8 +252,9 @@ async function runJoin(root: string, flags: InitFlags): Promise<JoinReport> {
     project: { name: config.projectName, models: config.modelsDir },
     files,
     environment,
+    upgrade,
     ...validation,
-    nextSteps: joinNextSteps(config, environment, validation),
+    nextSteps: joinNextSteps(config, environment, validation, upgradeStatus),
   };
 
   if (prose) {
@@ -274,31 +292,37 @@ async function ensureEnvFile(config: MoraConfig): Promise<WrittenFile | undefine
   return { path: ENV_FILENAME, action: 'created' };
 }
 
-/**
- * Brings Mora's own guidance up to date. Without this, a project scaffolded once
- * would keep whichever version of the docs shipped that day forever, no matter
- * how many times the team upgraded the CLI.
- */
-async function refreshAgentDocs(config: MoraConfig): Promise<WrittenFile[]> {
-  const written = await writeScaffold(
-    config.root,
-    buildAgentDocs({
-      modelsDir: config.modelsDir,
-      // The guide's example reads a local CSV, so it belongs on DuckDB whatever
-      // else the project connects to. This is the name the scaffold used too.
-      connectionName: config.connections.find(isDuckDbConnection)?.name ?? DUCKDB_CONNECTION_NAME,
-    }),
-  );
-  // Only what changed is worth a line in the report.
-  return written.filter((file) => file.action !== 'unchanged');
+function upgradeMessage(status: UpgradeStatus, projectVersion: string | undefined): string {
+  switch (status) {
+    case 'up-to-date':
+      return `Project matches Mora ${CLI_VERSION}.`;
+    case 'pending':
+      return projectVersion
+        ? `Project is at ${projectVersion}; running Mora is ${CLI_VERSION}. Run \`mora upgrade\`.`
+        : `Project has no cli_version stamp. Run \`mora upgrade\` to refresh Mora-owned files.`;
+    case 'cli-behind':
+      return (
+        `Project is at ${projectVersion}; you are running Mora ${CLI_VERSION}. ` +
+        `Update with \`npm i -g ${PACKAGE_NAME}@latest\`.`
+      );
+  }
 }
 
 function joinNextSteps(
   config: MoraConfig,
   environment: EnvironmentReport,
   validation: ProjectValidation,
+  upgradeStatus: UpgradeStatus,
 ): string[] {
   const steps: string[] = [];
+
+  if (upgradeStatus === 'pending') {
+    steps.push('Run `mora upgrade` to refresh Mora-owned docs and stamp this CLI version.');
+  } else if (upgradeStatus === 'cli-behind') {
+    steps.push(
+      `Update the CLI with \`npm i -g ${PACKAGE_NAME}@latest\`, then re-run \`mora init\`.`,
+    );
+  }
 
   if (environment.missing.length > 0) {
     steps.push(
@@ -329,6 +353,14 @@ function reportJoin(report: JoinReport): void {
       report.files.map((file) => `${actionLabel(file.action)} ${file.path}`).join('\n'),
       'Files',
     );
+  }
+
+  if (report.upgrade.status !== 'up-to-date') {
+    if (report.upgrade.status === 'cli-behind') {
+      prompts.log.warn(report.upgrade.message);
+    } else {
+      prompts.log.info(report.upgrade.message);
+    }
   }
 
   if (report.environment.required.length > 0) {

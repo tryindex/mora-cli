@@ -60,6 +60,7 @@ describe('buildScaffold', () => {
 
 interface ParsedConfig {
   version: number;
+  cli_version: string;
   project: { name: string; models: string };
   connections: {
     default: string;
@@ -77,6 +78,7 @@ describe('generated mora.yaml', () => {
   it('is valid YAML describing the project and a working DuckDB connection', () => {
     const parsed = config();
     expect(parsed.version).toBe(1);
+    expect(parsed.cli_version).toMatch(/^\d+\.\d+\.\d+/);
     expect(parsed.project).toEqual({ name: 'analytics', models: 'metrics' });
     expect(parsed.connections.default).toBe('duckdb');
     // The models directory, not the data directory: a table path written

@@ -61,6 +61,14 @@ export type ConnectionConfig = SupportedConnectionConfig | UnsupportedConnection
 export interface MoraConfig {
   /** Absolute project root, the directory holding mora.yaml. */
   root: string;
+  /** Config schema version (`version:` in mora.yaml). */
+  version: number;
+  /**
+   * The Mora CLI version that last ran `mora upgrade` (or scaffolded) this
+   * project. Optional so checkouts scaffolded before the stamp existed still
+   * load; missing means an upgrade is pending.
+   */
+  cliVersion: string | undefined;
   projectName: string;
   /** Models directory, relative to the root, with forward slashes. */
   modelsDir: string;
@@ -98,7 +106,7 @@ export function parseConfig(contents: string, root: string): MoraConfig {
     throw invalidConfig('the top level must be a mapping of keys to values.');
   }
 
-  assertVersion(document.version);
+  const version = readVersion(document.version);
 
   const project = asRecord(document.project);
   if (!project) {
@@ -107,6 +115,8 @@ export function parseConfig(contents: string, root: string): MoraConfig {
 
   return {
     root,
+    version,
+    cliVersion: readCliVersion(document.cli_version),
     projectName: readProjectName(project.name, root),
     modelsDir: readModelsDir(project.models),
     connections: readConnections(document.connections, root),
@@ -147,13 +157,22 @@ export function isDuckDbConnection(
   return connection.supported && connection.type === 'duckdb';
 }
 
-function assertVersion(value: unknown): void {
-  if (value === undefined || value === null) return;
+function readVersion(value: unknown): number {
+  if (value === undefined || value === null) return SUPPORTED_CONFIG_VERSION;
   if (value !== SUPPORTED_CONFIG_VERSION) {
     throw invalidConfig(
       `version ${JSON.stringify(value)} is not supported (expected ${SUPPORTED_CONFIG_VERSION}).`,
     );
   }
+  return SUPPORTED_CONFIG_VERSION;
+}
+
+function readCliVersion(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw invalidConfig('`cli_version` must be a non-empty string when set.');
+  }
+  return value.trim();
 }
 
 function readProjectName(value: unknown, root: string): string {

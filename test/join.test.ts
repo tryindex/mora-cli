@@ -159,7 +159,7 @@ describe('committed artifacts', () => {
     expect(existsSync(path.join(root, ENV_EXAMPLE_FILENAME))).toBe(false);
   });
 
-  it('brings its own docs up to date without touching what the team wrote', async () => {
+  it('does not refresh Mora-owned docs; that is mora upgrade', async () => {
     const root = await committedProject();
     const doc = path.join(root, '.agents', 'malloy.md');
     await writeFile(doc, 'guidance from an older version of Mora\n', 'utf8');
@@ -167,21 +167,43 @@ describe('committed artifacts', () => {
 
     const report = await join(root);
 
-    expect(report.files).toEqual([{ path: '.agents/malloy.md', action: 'overwritten' }]);
-    await expect(readFile(doc, 'utf8')).resolves.toContain('source:');
-    // AGENTS.md is shared with the team, so join mode leaves it alone.
+    expect(report.files).toEqual([]);
+    await expect(readFile(doc, 'utf8')).resolves.toBe('guidance from an older version of Mora\n');
     await expect(readFile(path.join(root, 'AGENTS.md'), 'utf8')).resolves.toBe(agents);
+    expect(report.upgrade.status).toBe('up-to-date');
   });
 
-  it('says nothing about its docs when they are already current', async () => {
+  it('reports when mora upgrade is pending', async () => {
     const root = await committedProject();
+    const configPath = path.join(root, 'mora.yaml');
+    const original = await readFile(configPath, 'utf8');
+    await writeFile(configPath, original.replace(/^cli_version:.*/m, 'cli_version: 0.0.1'), 'utf8');
 
     const report = await join(root);
 
-    expect(report.files).toEqual([]);
+    expect(report.upgrade.status).toBe('pending');
+    expect(report.upgrade.projectVersion).toBe('0.0.1');
+    expect(report.nextSteps[0]).toContain('mora upgrade');
   });
 
-  it('refreshes its own block in AGENTS.md and leaves team conventions alone', async () => {
+  it('reports when the running CLI is behind the project stamp', async () => {
+    const root = await committedProject();
+    const configPath = path.join(root, 'mora.yaml');
+    const original = await readFile(configPath, 'utf8');
+    await writeFile(
+      configPath,
+      original.replace(/^cli_version:.*/m, 'cli_version: 99.0.0'),
+      'utf8',
+    );
+
+    const report = await join(root);
+
+    expect(report.upgrade.status).toBe('cli-behind');
+    expect(report.upgrade.projectVersion).toBe('99.0.0');
+    expect(report.nextSteps[0]).toMatch(/npm i -g/);
+  });
+
+  it('refreshes its own block in AGENTS.md under --force and leaves team conventions alone', async () => {
     const root = await committedProject();
     const agentsPath = path.join(root, 'AGENTS.md');
     const rule = 'Ask before renaming a measure.';

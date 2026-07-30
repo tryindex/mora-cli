@@ -6,6 +6,8 @@ export interface MoraConfigOptions {
   database: DatabaseId;
   duckdbConnectionName: string;
   warehouseConnectionName: string;
+  /** Running Mora version, written as `cli_version` so upgrades can detect drift. */
+  cliVersion: string;
 }
 
 const WAREHOUSE_BLOCKS: Record<Exclude<DatabaseId, 'duckdb'>, (name: string) => string> = {
@@ -29,7 +31,7 @@ function indent(text: string, spaces: number): string {
 }
 
 export function renderMoraConfig(options: MoraConfigOptions): string {
-  const { projectName, modelsDir, database, duckdbConnectionName } = options;
+  const { projectName, modelsDir, database, duckdbConnectionName, cliVersion } = options;
   const warehouseName = options.warehouseConnectionName;
   const defaultConnection = database === 'duckdb' ? duckdbConnectionName : warehouseName;
 
@@ -50,6 +52,8 @@ export function renderMoraConfig(options: MoraConfigOptions): string {
 # credentials stay out of version control.
 
 version: 1
+# Written by Mora. Updated by \`mora upgrade\`; do not edit by hand.
+cli_version: ${cliVersion}
 
 project:
   name: ${projectName}

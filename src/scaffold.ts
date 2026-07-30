@@ -21,6 +21,7 @@ import {
   renderPublisherManifest,
 } from './templates/publisher.js';
 import { SAMPLE_ORDERS_CSV } from './templates/sample-data.js';
+import { CLI_VERSION } from './version.js';
 
 export const CONFIG_FILENAME = 'mora.yaml';
 export const AGENTS_FILENAME = 'AGENTS.md';
@@ -132,6 +133,7 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
     database: spec.database,
     duckdbConnectionName: DUCKDB_CONNECTION_NAME,
     warehouseConnectionName: WAREHOUSE_CONNECTION_NAME,
+    cliVersion: CLI_VERSION,
   });
 
   files.push({
@@ -226,7 +228,7 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
 
 /**
  * The docs Mora writes and keeps current. Kept separate from the rest of the
- * scaffold so `mora init` can refresh them in a project it did not create,
+ * scaffold so `mora upgrade` can refresh them in a project it did not create,
  * rather than leaving a checkout frozen at whichever version of Mora scaffolded
  * it.
  */

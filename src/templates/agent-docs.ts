@@ -224,11 +224,28 @@ The command records the variable in \`.env.example\` and reports it under
 the person running it can write. Adding a connection does not make it usable by a
 Publisher server, which keeps its own config.
 
+## mora upgrade
+
+Brings this project up to date with the running Mora: refreshes \`.agents/\` and
+the managed block in \`AGENTS.md\`, applies any \`mora.yaml\` migrations, and
+stamps \`cli_version\`. Run it after updating the CLI, then commit the diff so the
+team upgrades together.
+
+\`\`\`bash
+mora upgrade              # apply
+mora upgrade --check      # report only; exit 1 when pending
+mora upgrade --json
+\`\`\`
+
+A project stamped by a *newer* Mora refuses to run upgrade on an older CLI —
+update the binary first. A missing stamp is treated as pending.
+
 ## mora init
 
 In a project that already has \`mora.yaml\`, this is a setup run: it creates a
-local \`.env\` from \`.env.example\`, reports which credentials are unset,
-refreshes Mora's own docs in \`.agents/\`, and compiles the models. It does not
-touch models or configuration. Run it after cloning.
+local \`.env\` from \`.env.example\`, reports which credentials are unset, notes
+when \`mora upgrade\` (or a newer CLI) is needed, and compiles the models. It does
+not touch models, configuration, or Mora-owned docs — those are \`mora upgrade\`'s
+job. Run it after cloning.
 `;
 }
