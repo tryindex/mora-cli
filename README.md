@@ -22,7 +22,7 @@ Code, Codex, or your own.
 ## Quick start
 
 ```bash
-npx @moralabs/cli init
+npx @moradata/cli init
 ```
 
 That walks you through naming the project and picking a data source, then writes
@@ -225,7 +225,7 @@ your checkout instead of scaffolding over the work someone committed.
 
 ```bash
 git clone git@github.com:acme/analytics.git && cd analytics
-npx @moralabs/cli init
+npx @moradata/cli init
 ```
 
 That copies `.env.example` to a gitignored `.env`, tells you which credentials are

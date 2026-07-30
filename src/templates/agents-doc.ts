@@ -28,7 +28,7 @@ export function renderAgentsDoc(options: AgentsDocOptions): AgentsDoc {
 function renderTitle({ projectName }: AgentsDocOptions): string {
   return `# Working with the ${projectName} semantic layer
 
-This project uses [Mora](https://github.com/tryindex/mora-cli) to define a semantic
+This project uses [Mora](https://github.com/moradata/mora-cli) to define a semantic
 layer in [Malloy](https://malloydata.dev). Read this before answering any
 question about the data.
 `;
