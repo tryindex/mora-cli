@@ -36,6 +36,49 @@ export function collectEnvVars(value: unknown): string[] {
   return [...names].sort();
 }
 
+/** Values a `${VAR}` reference can be resolved from, in priority order. */
+export interface EnvLookup {
+  processEnv?: NodeJS.ProcessEnv;
+  /** Values read out of the project's `.env`, used when the process has none. */
+  envFile?: Record<string, string>;
+}
+
+export interface ResolvedValue {
+  /** The setting with every `${VAR}` replaced, or undefined when any is unset. */
+  value: string | undefined;
+  /** Variables the setting refers to that have no value anywhere. */
+  missing: string[];
+}
+
+/**
+ * Substitutes `${VAR}` references in a single setting. The process environment
+ * wins over the project `.env`, so a shell or CI can override a checked-out
+ * default without editing files. A setting with any unset variable resolves to
+ * nothing rather than to a half-interpolated string, which would otherwise
+ * reach a driver as a nonsense project id or path.
+ */
+export function resolveEnvRefs(setting: string | undefined, lookup: EnvLookup = {}): ResolvedValue {
+  if (setting === undefined) return { value: undefined, missing: [] };
+
+  const { processEnv = process.env, envFile = {} } = lookup;
+  const missing: string[] = [];
+
+  const value = setting.replace(ENV_VAR_REFERENCE, (_match, name: string) => {
+    const found = firstSet(processEnv[name], envFile[name]);
+    if (found === undefined) {
+      if (!missing.includes(name)) missing.push(name);
+      return '';
+    }
+    return found;
+  });
+
+  return { value: missing.length > 0 ? undefined : value, missing };
+}
+
+function firstSet(...values: (string | undefined)[]): string | undefined {
+  return values.find(isSet);
+}
+
 export type EnvVarSource = 'environment' | 'env-file';
 
 export interface EnvVarStatus {

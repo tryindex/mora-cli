@@ -97,7 +97,7 @@ export async function runQueryCommand(
   }
 
   const limit = parseLimit(flags.limit);
-  const { config, connection, modelPaths } = await openProject(directory);
+  const { config, connections, defaultConnection, modelPaths } = await openProject(directory);
 
   if (prose) {
     prompts.intro(pc.bgCyan(pc.black(' mora query ')));
@@ -111,9 +111,8 @@ export async function runQueryCommand(
     outcome = await runQuery({
       root: config.root,
       modelPaths,
-      connectionName: connection.name,
-      workingDirectory: connection.workingDirectory,
-      database: connection.database,
+      connections,
+      defaultConnectionName: defaultConnection.name,
       name,
       expr: flags.expr,
       limit,

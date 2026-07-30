@@ -31,3 +31,96 @@ export const DATABASES: Record<DatabaseId, DatabaseInfo> = {
 export function isDatabaseId(value: string): value is DatabaseId {
   return (DATABASE_IDS as readonly string[]).includes(value);
 }
+
+/** One setting of a connection, as it is asked for and as it is written. */
+export interface ConnectionSetting {
+  /** Key written under the connection in mora.yaml. */
+  key: string;
+  label: string;
+  /** Long-form note written above the setting in mora.yaml. */
+  comment?: string;
+  /** Shown in the prompt as the shape of an answer. */
+  placeholder?: string;
+  /** Value used when the answer is empty. */
+  defaultValue?: string;
+  /**
+   * A credential belongs in the environment, not in a committed file, so these
+   * settings are offered as a `${VAR}` reference by default.
+   */
+  envVar?: string;
+  /** Whether the connection is unusable without it. */
+  required: boolean;
+  /** CLI flag that supplies this setting unattended, without the leading `--`. */
+  flag: string;
+}
+
+export interface SettingsContext {
+  /** Models directory, the natural place for a DuckDB connection to read from. */
+  modelsDir: string;
+}
+
+/**
+ * What `mora connection add` asks for, per database. Declared here rather than in
+ * the command so the prompts, the flags and the YAML that gets written cannot
+ * drift apart.
+ */
+export function connectionSettings(id: DatabaseId, context: SettingsContext): ConnectionSetting[] {
+  switch (id) {
+    case 'duckdb':
+      return [
+        {
+          key: 'database',
+          label: 'Database file',
+          comment: 'Point this at a .duckdb file to persist state between runs.',
+          placeholder: ':memory:',
+          defaultValue: ':memory:',
+          required: true,
+          flag: 'database',
+        },
+        {
+          key: 'working_directory',
+          label: 'Directory relative table paths resolve from',
+          placeholder: context.modelsDir,
+          defaultValue: context.modelsDir,
+          required: true,
+          flag: 'working-directory',
+        },
+      ];
+    case 'bigquery':
+      return [
+        {
+          key: 'project_id',
+          label: 'GCP project id',
+          comment: 'The project whose tables the models read.',
+          envVar: 'GOOGLE_CLOUD_PROJECT',
+          required: true,
+          flag: 'project-id',
+        },
+        {
+          key: 'location',
+          label: 'Location',
+          comment: 'Needed when the data lives outside the multi-region default.',
+          placeholder: 'US',
+          required: false,
+          flag: 'location',
+        },
+        {
+          key: 'service_account_key_path',
+          label: 'Service account key file',
+          comment:
+            'Leave this out to use Application Default Credentials ' +
+            '(`gcloud auth application-default login`).',
+          envVar: 'GOOGLE_APPLICATION_CREDENTIALS',
+          required: false,
+          flag: 'service-account-key-path',
+        },
+        {
+          key: 'billing_project_id',
+          label: 'Billing project id',
+          comment: 'Only needed when queries are billed to a different project.',
+          required: false,
+          flag: 'billing-project-id',
+        },
+      ];
+  }
+}

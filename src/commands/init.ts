@@ -4,7 +4,7 @@ import path from 'node:path';
 import * as prompts from '@clack/prompts';
 import type { Command } from 'commander';
 import pc from 'picocolors';
-import { loadConfig, type MoraConfig, resolveDuckDbConnection } from '../config.js';
+import { isDuckDbConnection, loadConfig, type MoraConfig } from '../config.js';
 import { DATABASE_IDS, DATABASES, type DatabaseId, isDatabaseId } from '../databases.js';
 import {
   describeEnvironment,
@@ -21,6 +21,7 @@ import {
   buildAgentDocs,
   buildScaffold,
   CONFIG_FILENAME,
+  DUCKDB_CONNECTION_NAME,
   findConflicts,
   normalizeRelative,
   resolvePaths,
@@ -216,7 +217,15 @@ async function runJoin(root: string, flags: InitFlags): Promise<JoinReport> {
     await readEnvFile(path.join(config.root, ENV_FILENAME)),
   );
 
-  const validation = await validateProject(config, { prose });
+  const validation = await validateProject(config, {
+    prose,
+    // A connection Mora cannot open for want of a credential would fail every
+    // model with the same message the environment report just gave.
+    skipReason:
+      environment.missing.length > 0
+        ? `${environment.missing.join(', ')} not set, so the connections cannot be opened`
+        : undefined,
+  });
 
   const report: JoinReport = {
     ok: validation.summary.failed === 0 && environment.missing.length === 0,
@@ -275,7 +284,9 @@ async function refreshAgentDocs(config: MoraConfig): Promise<WrittenFile[]> {
     config.root,
     buildAgentDocs({
       modelsDir: config.modelsDir,
-      connectionName: resolveDuckDbConnection(config)?.name ?? 'duckdb',
+      // The guide's example reads a local CSV, so it belongs on DuckDB whatever
+      // else the project connects to. This is the name the scaffold used too.
+      connectionName: config.connections.find(isDuckDbConnection)?.name ?? DUCKDB_CONNECTION_NAME,
     }),
   );
   // Only what changed is worth a line in the report.
@@ -371,10 +382,21 @@ async function runCompileCheck(context: {
   const spinner = interactive ? prompts.spinner() : undefined;
   spinner?.start('Compiling the example model');
 
+  // The example always reads local CSV through the scaffolded DuckDB
+  // connection, whatever else the project is configured to talk to.
   const result = await compileModel({
     modelPath: path.join(root, paths.exampleModelPath),
-    workingDirectory: path.join(root, paths.modelsDir),
-    connectionName: 'duckdb',
+    connections: [
+      {
+        name: DUCKDB_CONNECTION_NAME,
+        type: 'duckdb',
+        supported: true,
+        requiredEnvVars: [],
+        database: ':memory:',
+        workingDirectory: path.join(root, paths.modelsDir),
+      },
+    ],
+    defaultConnectionName: DUCKDB_CONNECTION_NAME,
   });
 
   if (spinner) {

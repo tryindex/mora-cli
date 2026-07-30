@@ -15,9 +15,9 @@ by reading a few lines of a model instead of auditing a wall of SQL.
 Mora is a CLI, so any agent that can run a command can use it: Cursor, Claude
 Code, Codex, or your own.
 
-> **Status: early.** `mora init`, `mora validate`, `mora describe` and `mora query`
-> work against DuckDB today. A real BigQuery connection is next — see
-> [Roadmap](#roadmap).
+> **Status: early.** `mora init`, `mora connection`, `mora validate`, `mora describe`
+> and `mora query` work against DuckDB and BigQuery today. See
+> [Roadmap](#roadmap) for what is next.
 
 ## Quick start
 
@@ -56,6 +56,12 @@ From there the loop is three commands:
 mora describe                       # what the vocabulary already contains
 mora query monthly_revenue          # run a definition someone reviewed
 mora validate                       # after any edit to a model
+```
+
+When you are ready to point it at real data, add a connection:
+
+```bash
+mora connection add warehouse --type bigquery
 ```
 
 ## Designed for agents
@@ -100,17 +106,75 @@ local CSV, Parquet or `.duckdb` files and you have a semantic layer in one
 command. Choosing BigQuery writes a connection block that reads
 `${GOOGLE_CLOUD_PROJECT}` from the environment, so nothing about your warehouse
 ends up in version control. The DuckDB connection is always included, so a
-project always has one connection that works.
-
-BigQuery is a configuration placeholder for now: the block is written and its
-credentials are checked, but queries still run against DuckDB. Wiring up the real
-connection is the next milestone.
+project always has one connection that works — and you can add more later with
+[`mora connection add`](#mora-connection).
 
 Models go in `metrics/`, and init does not ask: every Mora project keeping them in
 the same place is worth more than the choice, and it lets the docs an agent reads
 name the directory outright. Pass `--models` when a repo needs somewhere else —
 that writes `project.models` in `mora.yaml`, which is what every other command
 reads.
+
+## `mora connection`
+
+The example runs on local files. A real semantic layer runs on your warehouse,
+and `mora connection` is how it gets there.
+
+```
+mora connection add [name]     declare a connection and check that it works
+mora connection test [name]    open each connection and see if it answers
+mora connection list           what is declared, and which credentials are unset
+```
+
+`add` edits `mora.yaml` in place, as a document rather than a re-render, so the
+comments and ordering your team put there survive a command that only means to add
+a few lines. It then records any new `${VAR}` in `.env.example`, and finishes by
+opening the connection for real:
+
+```
+$ mora connection add warehouse --type bigquery
+┌   mora connection add
+│
+◇  Added to mora.yaml ────────────────────╮
+│  warehouse  bigquery                    │
+│    project_id: ${GOOGLE_CLOUD_PROJECT}  │
+├─────────────────────────────────────────╯
+│
+●  .env.example now lists GOOGLE_CLOUD_PROJECT, so a teammate knows what to set.
+│
+└  warehouse is declared.
+```
+
+A credential is written as a `${VAR}` reference by default, not as a value:
+`mora.yaml` is committed, and a project id or key path baked into it is one you
+cannot rotate without a pull request. Pass a literal when you mean one
+(`--project-id acme-prod`). Nothing is interpolated until a connection is opened,
+and a reference with no value fails by name rather than falling back to whatever
+credentials the machine happens to have.
+
+Models name the connection they read from, so several can coexist:
+
+```malloy
+source: orders is duckdb.table('data/orders.csv')
+source: sessions is warehouse.table('analytics.sessions')
+```
+
+`validate`, `describe` and `query` open every declared connection together and let
+Malloy route each source to its own, so one project can span a laptop's CSV files
+and a warehouse without splitting into two.
+
+Every prompt has a flag, so an agent can do this unattended:
+
+```bash
+mora connection add warehouse -t bigquery --project-id '${GOOGLE_CLOUD_PROJECT}' --default --json
+mora connection add exports -t duckdb --database exports.duckdb --yes
+```
+
+BigQuery authenticates with Application Default Credentials
+(`gcloud auth application-default login`); point `service_account_key_path` at a
+key file to use a service account instead. A Publisher server keeps its own
+connection config — Mora does not edit `publisher.config.json`, so a served
+project can read from a different warehouse than your laptop does.
 
 ## `mora validate`
 
@@ -141,8 +205,8 @@ $ mora validate
 Exit code `0` means every model compiled, `1` means at least one failed or the
 project could not be read. `--json` reports each model with its sources, named
 queries, compile duration and error text, which is the form an agent should use.
-Only DuckDB connections can be compiled today, so a model reading from a
-warehouse connection reports that rather than passing quietly.
+A model reading from a connection type Mora has no driver for says so, rather
+than passing quietly.
 
 ## `mora describe`
 
@@ -262,6 +326,8 @@ argues with a rule your team wrote:
 The same split applies to configuration: `mora.yaml`, `publisher.config.json` and
 `metrics/publisher.json` are scaffolded once and then belong to the project, so
 adding a connection or an environment is never undone by a later `mora init`.
+`mora connection add` is the exception that proves it — it edits `mora.yaml` as a
+document, leaving every comment and every other connection where they were.
 
 ## What a model looks like
 
@@ -323,9 +389,8 @@ scaffolds it and then leaves it alone.
 
 ## Roadmap
 
-- A real BigQuery connection, so `validate`, `describe` and `query` run against
-  the warehouse instead of only DuckDB. Publisher's own connection config stays
-  separate, so a served project can point at a different warehouse than a laptop.
+- More warehouses. DuckDB and BigQuery work today; Snowflake, Postgres and
+  Trino are the drivers Malloy already has, and each is a connection type away.
 - `mora describe` growing from substring matching over names and doc strings into
   real retrieval, so an agent can find a definition by meaning.
 - MCP over the development loop — `validate`, `describe` and `query` against a

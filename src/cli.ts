@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { Command, CommanderError } from 'commander';
 import pc from 'picocolors';
+import { registerConnectionCommand } from './commands/connection.js';
 import { registerDescribeCommand } from './commands/describe.js';
 import { registerInitCommand } from './commands/init.js';
 import { registerQueryCommand } from './commands/query.js';
@@ -30,6 +31,7 @@ function buildProgram(): Command {
   registerValidateCommand(program);
   registerDescribeCommand(program);
   registerQueryCommand(program);
+  registerConnectionCommand(program);
 
   return program;
 }

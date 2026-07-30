@@ -73,6 +73,9 @@ run: orders -> {
 - Time truncation reads as \`ordered_at.month\`, \`ordered_at.year\`, and so on.
 - A view is queried through its source (\`orders -> revenue_by_month\`); a
   \`query:\` declaration is already a complete query and runs on its own.
+- The name before \`.table(...)\` is a connection declared in \`mora.yaml\`, and a
+  project can have several. Run \`mora connection list\` to see which ones exist
+  before writing a source against a table you have not read from yet.
 
 ## Doc strings
 
@@ -134,10 +137,10 @@ Read this before running a \`mora\` command.
 
 Every command accepts \`--json\` for a machine-readable report instead of prose,
 and runs against the current directory unless told otherwise: \`init\` and
-\`validate\` take the project directory as their argument, while \`describe\` and
-\`query\` take it as \`-C <dir>\`, because their own argument is a name. Exit
-codes are the same everywhere: \`0\` success, \`1\` failure, \`2\` bad usage, \`3\`
-refused because files already exist.
+\`validate\` take the project directory as their argument, while \`describe\`,
+\`query\` and \`connection\` take it as \`-C <dir>\`, because their own argument is
+a name. Exit codes are the same everywhere: \`0\` success, \`1\` failure, \`2\` bad
+usage, \`3\` refused because files already exist.
 
 ## mora describe [pattern]
 
@@ -197,6 +200,29 @@ An answer nobody can audit is not worth much.
 Compiles every model in \`${modelsDir}/\`. Run it after any edit to a \`.malloy\`
 file, and before opening a pull request. \`--json\` lists each model with its
 sources, named queries and any compile error.
+
+## mora connection list | test [name] | add [name]
+
+A model reads from a named connection: \`warehouse.table('analytics.sessions')\`.
+Run \`mora connection list\` when a model needs a table that is not in the
+connection you have been using — it shows every connection the project declares,
+which one is the default, and which credentials are unset. If a query fails for a
+reason that looks like access rather than logic, \`mora connection test\` says
+whether the database is answering at all.
+
+\`mora connection add\` declares a new one. Give it \`--type\`, plus any required
+setting that has no sensible default, and it will not need to prompt:
+
+\`\`\`bash
+mora connection add warehouse --type bigquery --project-id '\${GOOGLE_CLOUD_PROJECT}' --json
+mora connection add exports --type duckdb --database exports.duckdb --yes
+\`\`\`
+
+Write a credential as \`\${VAR}\`, never as a literal: \`mora.yaml\` is committed.
+The command records the variable in \`.env.example\` and reports it under
+\`missingEnvVars\` if it is unset; the value itself belongs in \`.env\`, which only
+the person running it can write. Adding a connection does not make it usable by a
+Publisher server, which keeps its own config.
 
 ## mora init
 

@@ -2,6 +2,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { DuckDbConnectionConfig } from '../src/config.js';
 import { compileModel } from '../src/malloy/compile.js';
 import { buildScaffold, resolvePaths, type ScaffoldSpec, writeScaffold } from '../src/scaffold.js';
 
@@ -20,7 +21,19 @@ async function scaffoldProject() {
   return {
     root,
     modelPath: path.join(root, paths.exampleModelPath),
-    workingDirectory: path.join(root, paths.modelsDir),
+    connections: [duckdb(path.join(root, paths.modelsDir))],
+    defaultConnectionName: 'duckdb',
+  };
+}
+
+function duckdb(workingDirectory: string): DuckDbConnectionConfig {
+  return {
+    name: 'duckdb',
+    type: 'duckdb',
+    supported: true,
+    requiredEnvVars: [],
+    database: ':memory:',
+    workingDirectory,
   };
 }
 
@@ -30,8 +43,8 @@ describe('compileModel', () => {
 
     const result = await compileModel({
       modelPath: project.modelPath,
-      workingDirectory: project.workingDirectory,
-      connectionName: 'duckdb',
+      connections: project.connections,
+      defaultConnectionName: project.defaultConnectionName,
     });
 
     expect(result.error).toBeUndefined();
@@ -54,8 +67,8 @@ describe('compileModel', () => {
 
     const result = await compileModel({
       modelPath: project.modelPath,
-      workingDirectory: project.workingDirectory,
-      connectionName: 'duckdb',
+      connections: project.connections,
+      defaultConnectionName: project.defaultConnectionName,
     });
 
     expect(result.status).toBe('failed');

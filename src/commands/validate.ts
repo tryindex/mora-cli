@@ -2,10 +2,10 @@ import path from 'node:path';
 import * as prompts from '@clack/prompts';
 import type { Command } from 'commander';
 import pc from 'picocolors';
-import { loadConfig, type MoraConfig } from '../config.js';
+import { loadConfig, type MoraConfig, supportedConnections } from '../config.js';
 import { ExitCode } from '../errors.js';
 import { compileProject, type ModelCompileResult } from '../malloy/compile.js';
-import { requireDuckDbConnection, requireModels } from '../project.js';
+import { requireConnection, requireModels } from '../project.js';
 
 interface ValidateFlags {
   json?: boolean;
@@ -19,8 +19,10 @@ export interface CompileSummary {
 }
 
 export interface ProjectValidation {
-  /** Name of the connection the models were compiled against. */
+  /** The connection a model naming none was compiled against. */
   connection: string;
+  /** Every connection the models could read from, by name. */
+  connections: string[];
   models: ModelCompileResult[];
   summary: CompileSummary;
 }
@@ -92,28 +94,62 @@ export async function runValidate(
   return report;
 }
 
+export interface ValidateProjectOptions {
+  prose?: boolean;
+  /**
+   * Report every model as skipped instead of compiling, for a caller that
+   * already knows the attempt cannot succeed. `mora init` uses this when a
+   * credential is unset: it has just told the reader which one, and a compile
+   * error about the same thing adds nothing.
+   */
+  skipReason?: string;
+}
+
 /**
  * Compiles every model in a loaded project. Shared with `mora init`, which runs
  * the same check when it joins a project someone else set up.
  */
 export async function validateProject(
   config: MoraConfig,
-  options: { prose?: boolean } = {},
+  options: ValidateProjectOptions = {},
 ): Promise<ProjectValidation> {
-  const connection = requireDuckDbConnection(config);
+  const defaultConnection = requireConnection(config);
+  const connections = supportedConnections(config);
   const modelPaths = await requireModels(config);
+
+  const names = connections.map((connection) => connection.name);
+
+  if (options.skipReason) {
+    return {
+      connection: defaultConnection.name,
+      connections: names,
+      models: modelPaths.map((path) => ({
+        path,
+        status: 'skipped' as const,
+        reason: options.skipReason,
+      })),
+      summary: summarize(modelPaths.map(() => ({ path: '', status: 'skipped' as const }))),
+    };
+  }
 
   const spinner = options.prose && process.stdout.isTTY ? prompts.spinner() : undefined;
   spinner?.start(`Compiling ${count(modelPaths.length, 'model')}`);
 
-  const models = await compileProject({
-    root: config.root,
-    modelPaths,
-    connections: config.connections,
-    connectionName: connection.name,
-    workingDirectory: connection.workingDirectory,
-    database: connection.database,
-  });
+  let models: ModelCompileResult[];
+  try {
+    models = await compileProject({
+      root: config.root,
+      modelPaths,
+      declaredConnections: config.connections,
+      connections,
+      defaultConnectionName: defaultConnection.name,
+    });
+  } catch (error) {
+    // A connection that cannot be opened at all, such as one missing a
+    // credential. That is one problem with the project, not one per model.
+    spinner?.stop('Could not open the project connections');
+    throw error;
+  }
 
   const summary = summarize(models);
   spinner?.stop(
@@ -122,7 +158,12 @@ export async function validateProject(
       : `Compiled ${count(summary.passed, 'model')}`,
   );
 
-  return { connection: connection.name, models, summary };
+  return {
+    connection: defaultConnection.name,
+    connections: connections.map((connection) => connection.name),
+    models,
+    summary,
+  };
 }
 
 export function summarize(models: ModelCompileResult[]): CompileSummary {
@@ -143,9 +184,10 @@ function reportProse(report: ValidateReport): void {
   }
 
   const { passed, failed } = report.summary;
+  const against = report.connections.map((name) => pc.cyan(name)).join(', ');
   prompts.outro(
     report.ok
-      ? `${count(passed, 'model')} compiled against ${pc.cyan(report.connection)}.`
+      ? `${count(passed, 'model')} compiled against ${against || pc.cyan(report.connection)}.`
       : pc.red(`${count(failed, 'model')} failed to compile.`),
   );
 }

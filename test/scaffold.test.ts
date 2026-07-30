@@ -88,8 +88,10 @@ describe('generated mora.yaml', () => {
     });
   });
 
-  it('leaves warehouse connections commented out for a DuckDB project', () => {
+  it('declares only DuckDB for a DuckDB project, and points at the command that adds more', () => {
+    const file = buildScaffold(spec()).find((f) => f.path === CONFIG_FILENAME);
     expect(config().connections.warehouse).toBeUndefined();
+    expect(file?.contents).toContain('mora connection add');
   });
 
   it('activates the chosen warehouse and points the default at it', () => {

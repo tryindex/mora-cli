@@ -1,9 +1,9 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runValidate } from '../src/commands/validate.js';
-import { loadConfig, parseConfig, resolveDuckDbConnection } from '../src/config.js';
+import { loadConfig, parseConfig, resolveDefaultConnection } from '../src/config.js';
 import { MoraError } from '../src/errors.js';
 import { buildScaffold, type ScaffoldSpec, writeScaffold } from '../src/scaffold.js';
 
@@ -20,6 +20,13 @@ async function scaffoldProject(overrides: Partial<ScaffoldSpec> = {}): Promise<s
   await writeScaffold(root, buildScaffold({ ...spec, ...overrides, root }));
   return root;
 }
+
+/** Written as an escape so it stays a literal `${...}` reference, not interpolation. */
+const PROJECT_REF = '\u0024{GOOGLE_CLOUD_PROJECT}';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 function model(name: string, body: string): string {
   return `source: ${name} is duckdb.table('data/orders.csv') extend {\n${body}\n}\n`;
@@ -112,11 +119,40 @@ describe('runValidate', () => {
     expect(report.summary.total).toBe(0);
   });
 
-  it('explains that a warehouse connection cannot be compiled', async () => {
+  it('refuses to compile when a declared connection has no credentials', async () => {
     const root = await scaffoldProject({ database: 'bigquery' });
+    vi.stubEnv('GOOGLE_CLOUD_PROJECT', undefined);
+
+    // The scaffolded BigQuery block reads that variable. Compiling anyway would
+    // reach for whatever ambient credentials the machine has, which is a worse
+    // outcome than saying so.
+    await expect(runValidate(root, { json: true })).rejects.toMatchObject({
+      code: 'missing-credentials',
+    });
+  });
+
+  it('explains a connection type Mora has no driver for', async () => {
+    const root = await scaffoldProject();
+    await writeFile(
+      path.join(root, 'mora.yaml'),
+      [
+        'version: 1',
+        'project:',
+        '  name: analytics',
+        '  models: metrics',
+        'connections:',
+        '  default: duckdb',
+        '  duckdb:',
+        '    type: duckdb',
+        '    working_directory: metrics',
+        '  lake:',
+        '    type: snowflake',
+      ].join('\n'),
+      'utf8',
+    );
     await writeFile(
       path.join(root, 'metrics/example.malloy'),
-      "source: sales is warehouse.table('sales') extend {\n  measure: revenue is amount.sum()\n}\n",
+      "source: sales is lake.table('sales') extend {\n  measure: revenue is amount.sum()\n}\n",
       'utf8',
     );
 
@@ -125,8 +161,8 @@ describe('runValidate', () => {
     expect(report.ok).toBe(false);
     // DuckDB stays available, so validation still runs against it.
     expect(report.connection).toBe('duckdb');
-    expect(report.models[0]?.error).toContain('warehouse');
-    expect(report.models[0]?.error).toContain('bigquery');
+    expect(report.models[0]?.error).toContain('lake');
+    expect(report.models[0]?.error).toContain('snowflake');
   });
 
   it('refuses to run without a mora.yaml', async () => {
@@ -156,10 +192,11 @@ describe('loadConfig', () => {
     expect(config.projectName).toBe('analytics');
     expect(config.modelsDir).toBe('metrics');
     expect(config.defaultConnection).toBe('duckdb');
-    expect(resolveDuckDbConnection(config)).toEqual({
+    expect(resolveDefaultConnection(config)).toEqual({
       name: 'duckdb',
       type: 'duckdb',
       supported: true,
+      requiredEnvVars: [],
       database: ':memory:',
       workingDirectory: path.join(root, 'metrics'),
     });
@@ -183,13 +220,14 @@ describe('loadConfig', () => {
       '/tmp/project',
     );
 
-    expect(resolveDuckDbConnection(config)?.name).toBe('warm');
-    expect(resolveDuckDbConnection(config)?.database).toBe(
+    const resolved = resolveDefaultConnection(config);
+    expect(resolved?.name).toBe('warm');
+    expect(resolved?.type === 'duckdb' && resolved.database).toBe(
       path.resolve('/tmp/project/warm.duckdb'),
     );
   });
 
-  it('keeps unsupported connections but marks them as such', () => {
+  it('reads a BigQuery connection, keeping settings as written', () => {
     const config = parseConfig(
       [
         'project:',
@@ -198,13 +236,41 @@ describe('loadConfig', () => {
         '  default: warehouse',
         '  warehouse:',
         '    type: bigquery',
-        '    project_id: my-gcp-project',
+        `    project_id: ${PROJECT_REF}`,
+        '    location: US',
       ].join('\n'),
       '/tmp/project',
     );
 
-    expect(config.connections).toEqual([{ name: 'warehouse', type: 'bigquery', supported: false }]);
-    expect(resolveDuckDbConnection(config)).toBeUndefined();
+    expect(config.connections).toEqual([
+      {
+        name: 'warehouse',
+        type: 'bigquery',
+        supported: true,
+        // The reference is stored, not resolved: reading a config must not
+        // depend on which credentials happen to be set.
+        requiredEnvVars: ['GOOGLE_CLOUD_PROJECT'],
+        projectId: PROJECT_REF,
+        billingProjectId: undefined,
+        location: 'US',
+        serviceAccountKeyPath: undefined,
+      },
+    ]);
+    expect(resolveDefaultConnection(config)?.name).toBe('warehouse');
+  });
+
+  it('marks a connection type it has no driver for as unsupported', () => {
+    const config = parseConfig(
+      ['project:', '  models: metrics', 'connections:', '  lake:', '    type: snowflake'].join(
+        '\n',
+      ),
+      '/tmp/project',
+    );
+
+    expect(config.connections).toEqual([
+      { name: 'lake', type: 'snowflake', supported: false, requiredEnvVars: [] },
+    ]);
+    expect(resolveDefaultConnection(config)).toBeUndefined();
   });
 
   it('falls back to the directory name when the project has no name', () => {

@@ -8,8 +8,17 @@ import { CONFIG_FILENAME, normalizeRelative } from './scaffold.js';
 
 export const SUPPORTED_CONFIG_VERSION = 1;
 
-export interface DuckDbConnectionConfig {
+interface ConnectionConfigBase {
   name: string;
+  /**
+   * Environment variables this connection's settings refer to. Kept per
+   * connection so a missing credential can name the connection it blocks
+   * rather than the whole project.
+   */
+  requiredEnvVars: string[];
+}
+
+export interface DuckDbConnectionConfig extends ConnectionConfigBase {
   type: 'duckdb';
   supported: true;
   /** `:memory:` or a path to a .duckdb file, resolved against the project root. */
@@ -19,17 +28,35 @@ export interface DuckDbConnectionConfig {
 }
 
 /**
- * A connection Mora understands well enough to report on, but cannot open. Only
- * DuckDB has an implementation today; the rest exist in `mora.yaml` as
- * placeholders so a project can declare its intent.
+ * Settings are kept as written, `${VAR}` references and all. They are resolved
+ * when the connection is opened, so reading a config never depends on which
+ * credentials happen to be set.
  */
-export interface UnsupportedConnectionConfig {
-  name: string;
+export interface BigQueryConnectionConfig extends ConnectionConfigBase {
+  type: 'bigquery';
+  supported: true;
+  projectId?: string;
+  /** Project queries are billed to, when it differs from the one being read. */
+  billingProjectId?: string;
+  location?: string;
+  /** Service account key file, for when Application Default Credentials are not enough. */
+  serviceAccountKeyPath?: string;
+}
+
+/**
+ * A connection Mora understands well enough to report on, but cannot open. These
+ * exist in `mora.yaml` as placeholders so a project can declare its intent
+ * before Mora has a driver for it.
+ */
+export interface UnsupportedConnectionConfig extends ConnectionConfigBase {
   type: string;
   supported: false;
 }
 
-export type ConnectionConfig = DuckDbConnectionConfig | UnsupportedConnectionConfig;
+/** A connection Mora has a driver for, and can compile and query against. */
+export type SupportedConnectionConfig = DuckDbConnectionConfig | BigQueryConnectionConfig;
+
+export type ConnectionConfig = SupportedConnectionConfig | UnsupportedConnectionConfig;
 
 export interface MoraConfig {
   /** Absolute project root, the directory holding mora.yaml. */
@@ -89,19 +116,35 @@ export function parseConfig(contents: string, root: string): MoraConfig {
 }
 
 /**
- * The connection to compile against. Prefers the project default so a model
- * that names no connection behaves the same way Mora reports it.
+ * Every connection Mora has a driver for, in declaration order. Models can name
+ * any of them, so they are all opened together rather than one being singled out.
  */
-export function resolveDuckDbConnection(config: MoraConfig): DuckDbConnectionConfig | undefined {
-  const duckdb = config.connections.filter(isDuckDbConnection);
-  const preferred = duckdb.find((connection) => connection.name === config.defaultConnection);
-  return preferred ?? duckdb[0];
+export function supportedConnections(config: MoraConfig): SupportedConnectionConfig[] {
+  return config.connections.filter(isSupportedConnection);
+}
+
+/**
+ * The connection a model with no explicit name compiles against: the declared
+ * default when it is usable, otherwise the first one that is.
+ */
+export function resolveDefaultConnection(
+  config: MoraConfig,
+): SupportedConnectionConfig | undefined {
+  const usable = supportedConnections(config);
+  const preferred = usable.find((connection) => connection.name === config.defaultConnection);
+  return preferred ?? usable[0];
+}
+
+export function isSupportedConnection(
+  connection: ConnectionConfig,
+): connection is SupportedConnectionConfig {
+  return connection.supported;
 }
 
 export function isDuckDbConnection(
   connection: ConnectionConfig,
 ): connection is DuckDbConnectionConfig {
-  return connection.supported;
+  return connection.supported && connection.type === 'duckdb';
 }
 
 function assertVersion(value: unknown): void {
@@ -173,17 +216,51 @@ function readConnection(name: string, value: unknown, root: string): ConnectionC
     throw invalidConfig(`connection \`${name}\` needs a \`type\`.`);
   }
 
-  if (type.trim() !== 'duckdb') {
-    return { name, type: type.trim(), supported: false };
-  }
+  const requiredEnvVars = collectEnvVars(settings);
 
-  return {
-    name,
-    type: 'duckdb',
-    supported: true,
-    database: readDuckDbDatabase(name, settings.database, root),
-    workingDirectory: readWorkingDirectory(name, settings.working_directory, root),
-  };
+  switch (type.trim()) {
+    case 'duckdb':
+      return {
+        name,
+        type: 'duckdb',
+        supported: true,
+        requiredEnvVars,
+        database: readDuckDbDatabase(name, settings.database, root),
+        workingDirectory: readWorkingDirectory(name, settings.working_directory, root),
+      };
+    case 'bigquery':
+      return {
+        name,
+        type: 'bigquery',
+        supported: true,
+        requiredEnvVars,
+        // Paths and ids are kept verbatim: a `${VAR}` reference is not a path
+        // until it has been resolved, and resolving belongs to opening.
+        projectId: readOptionalSetting(name, 'project_id', settings.project_id),
+        billingProjectId: readOptionalSetting(
+          name,
+          'billing_project_id',
+          settings.billing_project_id,
+        ),
+        location: readOptionalSetting(name, 'location', settings.location),
+        serviceAccountKeyPath: readOptionalSetting(
+          name,
+          'service_account_key_path',
+          settings.service_account_key_path,
+        ),
+      };
+    default:
+      return { name, type: type.trim(), supported: false, requiredEnvVars };
+  }
+}
+
+function readOptionalSetting(connection: string, key: string, value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw invalidConfig(`connection \`${connection}\` has an invalid \`${key}\`.`);
+  }
+  return value.trim();
 }
 
 function readDuckDbDatabase(name: string, value: unknown, root: string): string {

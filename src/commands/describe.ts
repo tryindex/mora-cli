@@ -73,7 +73,7 @@ export async function runDescribe(
   flags: DescribeFlags = {},
 ): Promise<DescribeReport> {
   const prose = !flags.json;
-  const { config, connection, modelPaths } = await openProject(directory);
+  const { config, connections, defaultConnection, modelPaths } = await openProject(directory);
 
   if (prose) {
     prompts.intro(pc.bgCyan(pc.black(' mora describe ')));
@@ -82,9 +82,8 @@ export async function runDescribe(
   const all = await describeProject({
     root: config.root,
     modelPaths,
-    connectionName: connection.name,
-    workingDirectory: connection.workingDirectory,
-    database: connection.database,
+    connections,
+    defaultConnectionName: defaultConnection.name,
   });
 
   const vocabulary = pattern ? filterVocabulary(all, pattern) : all;
