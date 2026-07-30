@@ -31,7 +31,7 @@ import {
 import { renderEnvFile } from '../templates/env.js';
 import { count, type ProjectValidation, printModelResults, validateProject } from './validate.js';
 
-const DEFAULT_MODELS_DIR = 'semantic';
+const DEFAULT_MODELS_DIR = 'metrics';
 const FALLBACK_PROJECT_NAME = 'analytics';
 const PROJECT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/;
 
@@ -435,25 +435,6 @@ async function promptForSpec(root: string, flags: InitFlags): Promise<ScaffoldSp
       }),
     ));
 
-  const modelsDir =
-    flags.models ??
-    (await ask(
-      prompts.text({
-        message: 'Directory for Malloy models',
-        placeholder: DEFAULT_MODELS_DIR,
-        defaultValue: DEFAULT_MODELS_DIR,
-        validate: (value) => {
-          if (!value) return undefined;
-          try {
-            validateModelsDir(value);
-            return undefined;
-          } catch (error) {
-            return error instanceof Error ? error.message : 'Invalid directory.';
-          }
-        },
-      }),
-    ));
-
   const includeExample = flags.example
     ? await ask(
         prompts.confirm({
@@ -475,7 +456,10 @@ async function promptForSpec(root: string, flags: InitFlags): Promise<ScaffoldSp
     root,
     projectName: validateProjectName(projectName),
     database,
-    modelsDir: validateModelsDir(modelsDir),
+    // Not asked for: every Mora project keeping its models in the same place is
+    // worth more than the choice. `--models` is there for a repo that needs a
+    // different one.
+    modelsDir: validateModelsDir(flags.models ?? DEFAULT_MODELS_DIR),
     includeExample,
   };
 }

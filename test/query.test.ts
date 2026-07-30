@@ -10,7 +10,7 @@ const spec: ScaffoldSpec = {
   root: '',
   projectName: 'analytics',
   database: 'duckdb',
-  modelsDir: 'semantic',
+  modelsDir: 'metrics',
   includeExample: true,
 };
 
@@ -39,7 +39,7 @@ describe('runQueryCommand', () => {
     expect(report.ok).toBe(true);
     expect(report.command).toBe('query');
     expect(report.name).toBe('monthly_revenue');
-    expect(report.model).toBe('semantic/example.malloy');
+    expect(report.model).toBe('metrics/example.malloy');
     expect(report.executed).toBe(true);
     // A definition someone committed has been through review.
     expect(report.reviewed).toBe(true);
@@ -109,7 +109,7 @@ describe('runQueryCommand', () => {
 
   it('explains a failure caused by data that is not there', async () => {
     const root = await scaffoldProject();
-    await rm(path.join(root, 'semantic/data/orders.csv'));
+    await rm(path.join(root, 'metrics/data/orders.csv'));
 
     const error = await moraError(runQueryCommand(root, 'monthly_revenue', { json: true }));
 
@@ -148,7 +148,7 @@ describe('runQueryCommand', () => {
   it('picks the model an expression belongs to when there is more than one', async () => {
     const root = await scaffoldProject();
     await writeFile(
-      path.join(root, 'semantic/refunds.malloy'),
+      path.join(root, 'metrics/refunds.malloy'),
       "source: refunds is duckdb.table('orders.csv') extend {\n" +
         '  measure: refunded is amount.sum()\n' +
         '}\n',
@@ -160,7 +160,7 @@ describe('runQueryCommand', () => {
       json: true,
     });
 
-    expect(report.model).toBe('semantic/refunds.malloy');
+    expect(report.model).toBe('metrics/refunds.malloy');
     expect(report.rows[0]).toHaveProperty('refunded');
   });
 });

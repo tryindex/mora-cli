@@ -11,7 +11,7 @@ const spec: ScaffoldSpec = {
   root: '',
   projectName: 'analytics',
   database: 'duckdb',
-  modelsDir: 'semantic',
+  modelsDir: 'metrics',
   includeExample: true,
 };
 
@@ -34,9 +34,9 @@ describe('runValidate', () => {
     expect(report.ok).toBe(true);
     expect(report.command).toBe('validate');
     expect(report.connection).toBe('duckdb');
-    expect(report.project).toEqual({ name: 'analytics', models: 'semantic' });
+    expect(report.project).toEqual({ name: 'analytics', models: 'metrics' });
     expect(report.summary).toEqual({ total: 1, passed: 1, failed: 0, skipped: 0 });
-    expect(report.models[0]?.path).toBe('semantic/example.malloy');
+    expect(report.models[0]?.path).toBe('metrics/example.malloy');
     expect(report.models[0]?.sources).toContain('orders');
     expect(report.models[0]?.queries).toContain('monthly_revenue');
   });
@@ -44,7 +44,7 @@ describe('runValidate', () => {
   it('reports a broken model as failed without throwing', async () => {
     const root = await scaffoldProject();
     await writeFile(
-      path.join(root, 'semantic/example.malloy'),
+      path.join(root, 'metrics/example.malloy'),
       model('orders', '  measure: revenue is no_such_column.sum()'),
       'utf8',
     );
@@ -60,12 +60,12 @@ describe('runValidate', () => {
   it('reports every model separately, in a stable order', async () => {
     const root = await scaffoldProject();
     await writeFile(
-      path.join(root, 'semantic/metrics.malloy'),
-      model('metrics', '  measure: order_count is count()'),
+      path.join(root, 'metrics/revenue.malloy'),
+      model('revenue', '  measure: order_count is count()'),
       'utf8',
     );
     await writeFile(
-      path.join(root, 'semantic/broken.malloy'),
+      path.join(root, 'metrics/broken.malloy'),
       model('broken', '  measure: revenue is missing_column.sum()'),
       'utf8',
     );
@@ -73,9 +73,9 @@ describe('runValidate', () => {
     const report = await runValidate(root, { json: true });
 
     expect(report.models.map((m) => m.path)).toEqual([
-      'semantic/broken.malloy',
-      'semantic/example.malloy',
-      'semantic/metrics.malloy',
+      'metrics/broken.malloy',
+      'metrics/example.malloy',
+      'metrics/revenue.malloy',
     ]);
     expect(report.summary).toEqual({ total: 3, passed: 2, failed: 1, skipped: 0 });
     expect(report.ok).toBe(false);
@@ -84,12 +84,12 @@ describe('runValidate', () => {
   it('finds models in nested directories but ignores the data directory', async () => {
     const root = await scaffoldProject();
     await writeFile(
-      path.join(root, 'semantic/data/notes.malloy'),
+      path.join(root, 'metrics/data/notes.malloy'),
       model('ignored', '  measure: order_count is count()'),
       'utf8',
     );
     await writeFile(
-      path.join(root, 'semantic/core.malloy'),
+      path.join(root, 'metrics/core.malloy'),
       model('core', '  measure: order_count is count()'),
       'utf8',
     );
@@ -97,8 +97,8 @@ describe('runValidate', () => {
     const report = await runValidate(root, { json: true });
 
     expect(report.models.map((m) => m.path)).toEqual([
-      'semantic/core.malloy',
-      'semantic/example.malloy',
+      'metrics/core.malloy',
+      'metrics/example.malloy',
     ]);
   });
 
@@ -115,7 +115,7 @@ describe('runValidate', () => {
   it('explains that a warehouse connection cannot be compiled', async () => {
     const root = await scaffoldProject({ database: 'bigquery' });
     await writeFile(
-      path.join(root, 'semantic/example.malloy'),
+      path.join(root, 'metrics/example.malloy'),
       "source: sales is warehouse.table('sales') extend {\n  measure: revenue is amount.sum()\n}\n",
       'utf8',
     );
@@ -139,7 +139,7 @@ describe('runValidate', () => {
 
   it('refuses to run when the models directory is missing', async () => {
     const root = await scaffoldProject();
-    await rm(path.join(root, 'semantic'), { recursive: true, force: true });
+    await rm(path.join(root, 'metrics'), { recursive: true, force: true });
 
     await expect(runValidate(root, { json: true })).rejects.toMatchObject({
       code: 'models-dir-not-found',
@@ -154,14 +154,14 @@ describe('loadConfig', () => {
     const config = await loadConfig(root);
 
     expect(config.projectName).toBe('analytics');
-    expect(config.modelsDir).toBe('semantic');
+    expect(config.modelsDir).toBe('metrics');
     expect(config.defaultConnection).toBe('duckdb');
     expect(resolveDuckDbConnection(config)).toEqual({
       name: 'duckdb',
       type: 'duckdb',
       supported: true,
       database: ':memory:',
-      workingDirectory: path.join(root, 'semantic/data'),
+      workingDirectory: path.join(root, 'metrics/data'),
     });
   });
 
@@ -171,7 +171,7 @@ describe('loadConfig', () => {
         'version: 1',
         'project:',
         '  name: analytics',
-        '  models: semantic',
+        '  models: metrics',
         'connections:',
         '  default: warm',
         '  cold:',
@@ -193,7 +193,7 @@ describe('loadConfig', () => {
     const config = parseConfig(
       [
         'project:',
-        '  models: semantic',
+        '  models: metrics',
         'connections:',
         '  default: warehouse',
         '  warehouse:',
@@ -208,7 +208,7 @@ describe('loadConfig', () => {
   });
 
   it('falls back to the directory name when the project has no name', () => {
-    const config = parseConfig('project:\n  models: semantic\n', '/tmp/retail-analytics');
+    const config = parseConfig('project:\n  models: metrics\n', '/tmp/retail-analytics');
     expect(config.projectName).toBe('retail-analytics');
   });
 
@@ -217,9 +217,9 @@ describe('loadConfig', () => {
     ['a missing project block', 'version: 1\n'],
     ['a missing models directory', 'project:\n  name: analytics\n'],
     ['a models directory outside the project', 'project:\n  models: ../elsewhere\n'],
-    ['an unsupported version', 'version: 2\nproject:\n  models: semantic\n'],
-    ['a connection without a type', 'project:\n  models: semantic\nconnections:\n  db: {}\n'],
-    ['connections that are not a mapping', 'project:\n  models: semantic\nconnections: nope\n'],
+    ['an unsupported version', 'version: 2\nproject:\n  models: metrics\n'],
+    ['a connection without a type', 'project:\n  models: metrics\nconnections:\n  db: {}\n'],
+    ['connections that are not a mapping', 'project:\n  models: metrics\nconnections: nope\n'],
   ])('rejects %s', (_case, contents) => {
     expect(() => parseConfig(contents, '/tmp/project')).toThrow(MoraError);
   });

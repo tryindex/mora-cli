@@ -30,7 +30,7 @@ a working semantic layer into the current directory:
 
 ```
 mora.yaml               # models directory + database connections
-semantic/
+metrics/
   example.malloy        # a source with dimensions, measures and views
   data/orders.csv       # sample data, so the example runs immediately
 AGENTS.md               # the rules your agent must follow, plus your own
@@ -85,7 +85,7 @@ Usage: mora init [options] [directory]
 Options:
   -n, --name <name>    project name
   -d, --db <database>  data source (duckdb, bigquery)
-  -m, --models <dir>   directory for Malloy models (default: semantic)
+  -m, --models <dir>   directory for Malloy models (default: metrics)
   --no-example         skip the example model and its sample data
   -y, --yes            accept defaults without prompting
   -f, --force          overwrite existing files
@@ -103,6 +103,12 @@ project always has one connection that works.
 BigQuery is a configuration placeholder for now: the block is written and its
 credentials are checked, but queries still run against DuckDB. Wiring up the real
 connection is the next milestone.
+
+Models go in `metrics/`, and init does not ask: every Mora project keeping them in
+the same place is worth more than the choice, and it lets the docs an agent reads
+name the directory outright. Pass `--models` when a repo needs somewhere else —
+that writes `project.models` in `mora.yaml`, which is what every other command
+reads.
 
 ## `mora validate`
 
@@ -124,7 +130,7 @@ $ mora validate
 ┌   mora validate
 │
 ◇  Models ────────────────────────────────────────────────────╮
-│    pass semantic/example.malloy  1 source, 3 named queries  │
+│    pass metrics/example.malloy  1 source, 3 named queries  │
 ├─────────────────────────────────────────────────────────────╯
 │
 └  1 model compiled against duckdb.
@@ -154,14 +160,14 @@ queries that can be run directly:
 $ mora describe revenue
 ┌   mora describe
 │
-◇  orders  semantic/example.malloy ─╮
-│  measures                         │
-│    revenue  number                │
-│    average_order_value  number    │
-│  views                            │
-│    revenue_by_month  view         │
-│    revenue_by_region  view        │
-├───────────────────────────────────╯
+◇  orders  metrics/example.malloy ─╮
+│  measures                        │
+│    revenue  number               │
+│    average_order_value  number   │
+│  views                           │
+│    revenue_by_month  view        │
+│    revenue_by_region  view       │
+├──────────────────────────────────╯
 │
 └  1 source, 2 measures, 0 dimensions, 2 views, 0 named queries.
 ```

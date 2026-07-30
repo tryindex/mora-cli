@@ -9,7 +9,7 @@ const spec: ScaffoldSpec = {
   root: '',
   projectName: 'analytics',
   database: 'duckdb',
-  modelsDir: 'semantic',
+  modelsDir: 'metrics',
   includeExample: true,
 };
 

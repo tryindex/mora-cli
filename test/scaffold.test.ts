@@ -23,7 +23,7 @@ function spec(overrides: Partial<ScaffoldSpec> = {}): ScaffoldSpec {
     root: '/tmp/unused',
     projectName: 'analytics',
     database: 'duckdb',
-    modelsDir: 'semantic',
+    modelsDir: 'metrics',
     includeExample: true,
     ...overrides,
   };
@@ -34,8 +34,8 @@ describe('buildScaffold', () => {
     const paths = buildScaffold(spec()).map((file) => file.path);
     expect(paths).toEqual([
       'mora.yaml',
-      'semantic/data/orders.csv',
-      'semantic/example.malloy',
+      'metrics/data/orders.csv',
+      'metrics/example.malloy',
       'AGENTS.md',
       '.agents/malloy.md',
       '.agents/mora.md',
@@ -45,8 +45,8 @@ describe('buildScaffold', () => {
 
   it('drops the example but keeps the models directory when asked', () => {
     const paths = buildScaffold(spec({ includeExample: false })).map((file) => file.path);
-    expect(paths).toContain('semantic/.gitkeep');
-    expect(paths).not.toContain('semantic/example.malloy');
+    expect(paths).toContain('metrics/.gitkeep');
+    expect(paths).not.toContain('metrics/example.malloy');
   });
 
   it('honours a custom models directory', () => {
@@ -75,12 +75,12 @@ describe('generated mora.yaml', () => {
   it('is valid YAML describing the project and a working DuckDB connection', () => {
     const parsed = config();
     expect(parsed.version).toBe(1);
-    expect(parsed.project).toEqual({ name: 'analytics', models: 'semantic' });
+    expect(parsed.project).toEqual({ name: 'analytics', models: 'metrics' });
     expect(parsed.connections.default).toBe('duckdb');
     expect(parsed.connections.duckdb).toEqual({
       type: 'duckdb',
       database: ':memory:',
-      working_directory: 'semantic/data',
+      working_directory: 'metrics/data',
     });
   });
 

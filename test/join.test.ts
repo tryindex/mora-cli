@@ -38,19 +38,17 @@ afterEach(() => {
 describe('init in a project that already exists', () => {
   it('joins the project instead of scaffolding over it', async () => {
     const root = await committedProject();
-    const before = await readFile(path.join(root, 'semantic/example.malloy'), 'utf8');
+    const before = await readFile(path.join(root, 'metrics/example.malloy'), 'utf8');
     const config = await readFile(path.join(root, 'mora.yaml'), 'utf8');
 
     const report = await join(root);
 
     expect(report.mode).toBe('join');
     expect(report.ok).toBe(true);
-    expect(report.project).toEqual({ name: 'retail', models: 'semantic' });
+    expect(report.project).toEqual({ name: 'retail', models: 'metrics' });
     expect(report.summary.passed).toBe(1);
     // Nothing the team committed may change.
-    await expect(readFile(path.join(root, 'semantic/example.malloy'), 'utf8')).resolves.toBe(
-      before,
-    );
+    await expect(readFile(path.join(root, 'metrics/example.malloy'), 'utf8')).resolves.toBe(before);
     await expect(readFile(path.join(root, 'mora.yaml'), 'utf8')).resolves.toBe(config);
   });
 
@@ -116,7 +114,7 @@ describe('init in a project that already exists', () => {
 
   it('explains a compile failure caused by data that is not in the checkout', async () => {
     const root = await committedProject();
-    await rm(path.join(root, 'semantic/data/orders.csv'));
+    await rm(path.join(root, 'metrics/data/orders.csv'));
 
     const report = await join(root);
 

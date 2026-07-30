@@ -10,7 +10,7 @@ const spec: ScaffoldSpec = {
   root: '',
   projectName: 'analytics',
   database: 'duckdb',
-  modelsDir: 'semantic',
+  modelsDir: 'metrics',
   includeExample: true,
 };
 
@@ -39,10 +39,10 @@ describe('runDescribe', () => {
     expect(report.ok).toBe(true);
     expect(report.command).toBe('describe');
     expect(report.pattern).toBeNull();
-    expect(report.project).toEqual({ name: 'analytics', models: 'semantic' });
+    expect(report.project).toEqual({ name: 'analytics', models: 'metrics' });
 
     const orders = source(report, 'orders');
-    expect(orders.model).toBe('semantic/example.malloy');
+    expect(orders.model).toBe('metrics/example.malloy');
     // An aggregate is a measure; a row-level attribute is a dimension. That
     // split is the whole point of the listing.
     expect(names(orders.measures)).toContain('revenue');
@@ -101,7 +101,7 @@ describe('runDescribe', () => {
   it('reports a model that does not compile instead of describing half a project', async () => {
     const root = await scaffoldProject();
     await writeFile(
-      path.join(root, 'semantic/broken.malloy'),
+      path.join(root, 'metrics/broken.malloy'),
       "source: broken is duckdb.table('orders.csv') extend {\n  measure: x is nope.sum()\n}\n",
       'utf8',
     );
@@ -109,7 +109,7 @@ describe('runDescribe', () => {
     const report = await runDescribe(root, undefined, { json: true });
 
     expect(report.ok).toBe(false);
-    expect(report.failures[0]?.model).toBe('semantic/broken.malloy');
+    expect(report.failures[0]?.model).toBe('metrics/broken.malloy');
     expect(report.failures[0]?.error).toContain('nope');
     // The models that did compile are still described.
     expect(names(report.sources)).toContain('orders');
@@ -121,7 +121,7 @@ describe('resolveDefinition', () => {
     sources: [
       {
         name: 'orders',
-        model: 'semantic/orders.malloy',
+        model: 'metrics/orders.malloy',
         dimensions: [],
         measures: [],
         views: [{ name: 'by_month', type: 'view' }],
@@ -129,14 +129,14 @@ describe('resolveDefinition', () => {
       },
       {
         name: 'refunds',
-        model: 'semantic/refunds.malloy',
+        model: 'metrics/refunds.malloy',
         dimensions: [],
         measures: [],
         views: [{ name: 'by_month', type: 'view' }],
         joins: [],
       },
     ],
-    queries: [{ name: 'monthly_revenue', model: 'semantic/orders.malloy' }],
+    queries: [{ name: 'monthly_revenue', model: 'metrics/orders.malloy' }],
     failures: [],
   };
 
@@ -145,7 +145,7 @@ describe('resolveDefinition', () => {
   it('resolves a named query', () => {
     expect(resolveDefinition(definitions, 'monthly_revenue')).toMatchObject({
       kind: 'query',
-      model: 'semantic/orders.malloy',
+      model: 'metrics/orders.malloy',
     });
   });
 
