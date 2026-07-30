@@ -538,7 +538,9 @@ async function chooseSettings(
     const answer = unlessCancelled(
       await prompts.text({
         message: setting.required ? setting.label : `${setting.label} ${pc.dim('(optional)')}`,
-        placeholder: suggested ?? setting.placeholder ?? pc.dim('leave empty to skip'),
+        // Plain text only: the prompt dims the placeholder itself, and it splits
+        // off the first character to draw a cursor, which mangles an ANSI escape.
+        placeholder: suggested ?? setting.placeholder ?? 'leave empty to skip',
         defaultValue: suggested ?? '',
         validate: (value) =>
           setting.required && !value?.trim() && suggested === undefined
