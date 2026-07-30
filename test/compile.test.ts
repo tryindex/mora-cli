@@ -20,7 +20,7 @@ async function scaffoldProject() {
   return {
     root,
     modelPath: path.join(root, paths.exampleModelPath),
-    workingDirectory: path.join(root, paths.dataDir),
+    workingDirectory: path.join(root, paths.modelsDir),
   };
 }
 
@@ -46,7 +46,7 @@ describe('compileModel', () => {
     const project = await scaffoldProject();
     await writeFile(
       project.modelPath,
-      "source: orders is duckdb.table('orders.csv') extend {\n" +
+      "source: orders is duckdb.table('data/orders.csv') extend {\n" +
         '  measure: revenue is no_such_column.sum()\n' +
         '}\n',
       'utf8',

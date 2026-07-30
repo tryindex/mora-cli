@@ -55,6 +55,8 @@ function renderManaged(options: AgentsDocOptions): string {
       : []),
     `- \`${agentDocsDir}/malloy.md\` - how to write Malloy in this project.`,
     `- \`${agentDocsDir}/mora.md\` - the \`mora\` commands, their flags and output.`,
+    `- \`${modelsDir}/publisher.json\` and \`publisher.config.json\` - let Malloy`,
+    '  Publisher serve these models. Not used by the `mora` commands.',
   ].join('\n');
 
   return `Mora maintains this section, between its \`mora:begin\`/\`mora:end\` markers.
@@ -74,8 +76,9 @@ so an answer is reviewable by reading a few lines of Malloy.
 1. Answer data questions by composing the dimensions, measures and views that
    already exist. Run \`mora describe\` first to see them.
 2. If a question needs a concept the model does not have, add it to a model in
-   \`${modelsDir}/\` as a named dimension, measure or view, then query it. Do not
-   inline the logic into a one-off query and leave it there.
+   \`${modelsDir}/\` as a named dimension, measure or view, with a \`#"\` doc
+   string saying what it means, then query it. Do not inline the logic into a
+   one-off query and leave it there.
 3. Never bypass the semantic layer with raw SQL against the warehouse. If you
    believe raw SQL is unavoidable, say so and explain why.
 4. After editing any \`.malloy\` file, run \`mora validate\` before reporting

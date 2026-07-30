@@ -22,7 +22,7 @@ async function scaffoldProject(overrides: Partial<ScaffoldSpec> = {}): Promise<s
 }
 
 function model(name: string, body: string): string {
-  return `source: ${name} is duckdb.table('orders.csv') extend {\n${body}\n}\n`;
+  return `source: ${name} is duckdb.table('data/orders.csv') extend {\n${body}\n}\n`;
 }
 
 describe('runValidate', () => {
@@ -161,7 +161,7 @@ describe('loadConfig', () => {
       type: 'duckdb',
       supported: true,
       database: ':memory:',
-      workingDirectory: path.join(root, 'metrics/data'),
+      workingDirectory: path.join(root, 'metrics'),
     });
   });
 

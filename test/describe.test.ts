@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { type DescribeReport, runDescribe } from '../src/commands/describe.js';
-import { indexDefinitions, resolveDefinition, type Vocabulary } from '../src/malloy/describe.js';
+import {
+  type FieldDescription,
+  indexDefinitions,
+  resolveDefinition,
+  type Vocabulary,
+} from '../src/malloy/describe.js';
 import { buildScaffold, type ScaffoldSpec, writeScaffold } from '../src/scaffold.js';
 
 const spec: ScaffoldSpec = {
@@ -22,6 +27,12 @@ async function scaffoldProject(overrides: Partial<ScaffoldSpec> = {}): Promise<s
 
 function names(fields: { name: string }[]): string[] {
   return fields.map((field) => field.name);
+}
+
+function field(fields: FieldDescription[], name: string): FieldDescription {
+  const found = fields.find((candidate) => candidate.name === name);
+  if (!found) throw new Error(`no field named ${name} in ${names(fields).join(', ')}`);
+  return found;
 }
 
 function source(report: DescribeReport, name: string) {
@@ -74,10 +85,33 @@ describe('runDescribe', () => {
 
     expect(report.pattern).toBe('REVENUE');
     const orders = source(report, 'orders');
-    expect(names(orders.measures)).toEqual(['revenue']);
-    expect(names(orders.views)).toEqual(['revenue_by_month', 'revenue_by_region']);
+    expect(names(orders.measures)).toContain('revenue');
+    expect(names(orders.views)).toContain('revenue_by_month');
+    // No dimension mentions revenue, by name or in its description.
     expect(orders.dimensions).toEqual([]);
-    expect(names(report.queries)).toEqual(['monthly_revenue', 'completed_revenue_by_month']);
+    expect(names(report.queries)).toContain('monthly_revenue');
+  });
+
+  it('carries the doc string of each definition', async () => {
+    const root = await scaffoldProject();
+
+    const report = await runDescribe(root, undefined, { json: true });
+
+    const orders = source(report, 'orders');
+    expect(orders.description).toBeTruthy();
+    expect(field(orders.measures, 'revenue').description).toBe(
+      'Total order amount, including orders that are not yet completed.',
+    );
+    // A query that only runs a view is described by that view.
+    expect(report.queries[0]?.description).toBe('Revenue and order count for each month.');
+  });
+
+  it('finds a definition by words that appear only in its description', async () => {
+    const root = await scaffoldProject();
+
+    const report = await runDescribe(root, 'threshold', { json: true });
+
+    expect(names(source(report, 'orders').dimensions)).toEqual(['is_large_order']);
   });
 
   it('shows a whole source when the source itself matches', async () => {
@@ -102,7 +136,7 @@ describe('runDescribe', () => {
     const root = await scaffoldProject();
     await writeFile(
       path.join(root, 'metrics/broken.malloy'),
-      "source: broken is duckdb.table('orders.csv') extend {\n  measure: x is nope.sum()\n}\n",
+      "source: broken is duckdb.table('data/orders.csv') extend {\n  measure: x is nope.sum()\n}\n",
       'utf8',
     );
 

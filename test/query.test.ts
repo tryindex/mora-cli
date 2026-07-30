@@ -149,7 +149,7 @@ describe('runQueryCommand', () => {
     const root = await scaffoldProject();
     await writeFile(
       path.join(root, 'metrics/refunds.malloy'),
-      "source: refunds is duckdb.table('orders.csv') extend {\n" +
+      "source: refunds is duckdb.table('data/orders.csv') extend {\n" +
         '  measure: refunded is amount.sum()\n' +
         '}\n',
       'utf8',

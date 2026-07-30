@@ -14,6 +14,12 @@ import { renderAgentsDoc } from './templates/agents-doc.js';
 import { renderEnvExample } from './templates/env.js';
 import { renderExampleModel } from './templates/example-model.js';
 import { renderMoraConfig } from './templates/mora-config.js';
+import {
+  PUBLISHER_CONFIG_FILENAME,
+  PUBLISHER_MANIFEST_FILENAME,
+  renderPublisherConfig,
+  renderPublisherManifest,
+} from './templates/publisher.js';
 import { SAMPLE_ORDERS_CSV } from './templates/sample-data.js';
 
 export const CONFIG_FILENAME = 'mora.yaml';
@@ -21,6 +27,7 @@ export const AGENTS_FILENAME = 'AGENTS.md';
 /** Docs Mora owns outright, kept out of AGENTS.md so upgrades never conflict. */
 export const AGENT_DOCS_DIR = '.agents';
 export const EXAMPLE_MODEL_FILENAME = 'example.malloy';
+export const SAMPLE_DATA_DIR = 'data';
 export const SAMPLE_DATA_FILENAME = 'orders.csv';
 export const DUCKDB_CONNECTION_NAME = 'duckdb';
 export const WAREHOUSE_CONNECTION_NAME = 'warehouse';
@@ -66,19 +73,34 @@ export interface ScaffoldPaths {
   dataDir: string;
   exampleModelPath: string;
   sampleDataPath: string;
+  /**
+   * How the example model refers to its data: relative to the models directory
+   * rather than to the data directory. Malloy Publisher resolves a package's
+   * relative table paths from the package root, so a model written this way is
+   * servable as-is instead of only compiling under Mora.
+   */
+  sampleTablePath: string;
+  /** Package manifest, which lives beside the models it describes. */
+  publisherManifestPath: string;
+  /** Server config, which Publisher reads from the directory it starts in. */
+  publisherConfigPath: string;
   connectionName: string;
 }
 
 export function resolvePaths(spec: ScaffoldSpec): ScaffoldPaths {
   const modelsDir = normalizeRelative(spec.modelsDir);
-  const dataDir = `${modelsDir}/data`;
+  const dataDir = `${modelsDir}/${SAMPLE_DATA_DIR}`;
+  const sampleTablePath = `${SAMPLE_DATA_DIR}/${SAMPLE_DATA_FILENAME}`;
   return {
     configPath: CONFIG_FILENAME,
     agentsPath: AGENTS_FILENAME,
     modelsDir,
     dataDir,
     exampleModelPath: `${modelsDir}/${EXAMPLE_MODEL_FILENAME}`,
-    sampleDataPath: `${dataDir}/${SAMPLE_DATA_FILENAME}`,
+    sampleDataPath: `${modelsDir}/${sampleTablePath}`,
+    sampleTablePath,
+    publisherManifestPath: `${modelsDir}/${PUBLISHER_MANIFEST_FILENAME}`,
+    publisherConfigPath: PUBLISHER_CONFIG_FILENAME,
     connectionName: spec.database === 'duckdb' ? DUCKDB_CONNECTION_NAME : WAREHOUSE_CONNECTION_NAME,
   };
 }
@@ -88,6 +110,11 @@ const GITIGNORE_ENTRIES = [
   '.mora/',
   '*.duckdb',
   '*.duckdb.wal',
+  // Malloy Publisher's persisted state and its copies of served packages. The
+  // config that produces them is committed; these are per-machine.
+  'publisher.db',
+  'publisher.db.wal',
+  'publisher_data/',
   '.env',
   '.env.*',
   // The example is the one env file that belongs in version control: it tells a
@@ -102,7 +129,6 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
   const config = renderMoraConfig({
     projectName: spec.projectName,
     modelsDir: paths.modelsDir,
-    dataDir: paths.dataDir,
     database: spec.database,
     duckdbConnectionName: DUCKDB_CONNECTION_NAME,
     warehouseConnectionName: WAREHOUSE_CONNECTION_NAME,
@@ -112,6 +138,20 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
     path: paths.configPath,
     strategy: 'replace',
     contents: config,
+  });
+
+  // Scaffolded once and then the team's, like mora.yaml: a Publisher config
+  // grows warehouse connections and access rules that Mora must not clobber.
+  const publisher = { projectName: spec.projectName, modelsDir: paths.modelsDir };
+  files.push({
+    path: paths.publisherManifestPath,
+    strategy: 'replace',
+    contents: renderPublisherManifest(publisher),
+  });
+  files.push({
+    path: paths.publisherConfigPath,
+    strategy: 'replace',
+    contents: renderPublisherConfig(publisher),
   });
 
   if (spec.includeExample) {
@@ -127,7 +167,7 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
         // The example always reads local CSV, so it stays on the DuckDB
         // connection even when the project targets a warehouse.
         connectionName: DUCKDB_CONNECTION_NAME,
-        tablePath: SAMPLE_DATA_FILENAME,
+        tablePath: paths.sampleTablePath,
       }),
     });
   } else {

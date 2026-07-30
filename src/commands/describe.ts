@@ -40,7 +40,7 @@ export function registerDescribeCommand(program: Command): void {
   program
     .command('describe')
     .description('List the sources, dimensions, measures and views in the semantic layer')
-    .argument('[pattern]', 'only show definitions whose name contains this text')
+    .argument('[pattern]', 'only show definitions whose name or description contains this text')
     .option('-C, --directory <dir>', 'project directory', '.')
     .option('--json', 'print a machine-readable result instead of prose')
     .addHelpText(
@@ -145,7 +145,10 @@ function reportProse(report: DescribeReport): void {
   if (report.queries.length > 0) {
     prompts.note(
       report.queries
-        .map((query) => `${pc.cyan(query.name)}  ${pc.dim(`mora query ${query.name}`)}`)
+        .flatMap((query) => [
+          `${pc.cyan(query.name)}  ${pc.dim(`mora query ${query.name}`)}`,
+          ...describedAs(query.description, '  '),
+        ])
         .join('\n'),
       'Named queries',
     );
@@ -160,11 +163,13 @@ function reportProse(report: DescribeReport): void {
 }
 
 function sourceLines(source: SourceDescription): string[] {
-  if (definitionCount(source) === 0) return [pc.dim('  (no fields)')];
+  const description = describedAs(source.description, '');
+  if (definitionCount(source) === 0) return [...description, pc.dim('  (no fields)')];
 
   // Measures first: they are what a question is usually asking for, and the
   // list of dimensions is long enough to bury them otherwise.
   return [
+    ...description,
     ...group('measures', source.measures),
     ...group('dimensions', source.dimensions),
     ...group('views', source.views),
@@ -176,6 +181,24 @@ function group(label: string, fields: FieldDescription[]): string[] {
   if (fields.length === 0) return [];
   return [
     pc.dim(label),
-    ...fields.map((field) => `  ${field.name}${field.type ? pc.dim(`  ${field.type}`) : ''}`),
+    ...fields.flatMap((field) => [
+      `  ${field.name}${field.type ? pc.dim(`  ${field.type}`) : ''}`,
+      ...describedAs(field.description, '    '),
+    ]),
   ];
+}
+
+/** Longest description line kept in prose, so a note box stays readable. */
+const DESCRIPTION_WIDTH = 68;
+
+/**
+ * A doc string as a dimmed line under the definition it belongs to. Prose is
+ * shortened to keep the box narrow; `--json` carries the whole thing.
+ */
+function describedAs(description: string | undefined, indent: string): string[] {
+  if (!description) return [];
+  const width = DESCRIPTION_WIDTH - indent.length;
+  const text =
+    description.length > width ? `${description.slice(0, width - 1).trimEnd()}…` : description;
+  return [pc.dim(`${indent}${text}`)];
 }

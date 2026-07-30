@@ -373,7 +373,7 @@ async function runCompileCheck(context: {
 
   const result = await compileModel({
     modelPath: path.join(root, paths.exampleModelPath),
-    workingDirectory: path.join(root, paths.dataDir),
+    workingDirectory: path.join(root, paths.modelsDir),
     connectionName: 'duckdb',
   });
 

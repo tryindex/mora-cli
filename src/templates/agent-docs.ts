@@ -20,20 +20,26 @@ Read this before editing a \`.malloy\` file in \`${modelsDir}/\`.
 
 \`\`\`malloy
 // A source wraps a table and attaches meaning to it.
-source: orders is ${connectionName}.table('orders.csv') extend {
+#" One row per order, with the customer who placed it.
+source: orders is ${connectionName}.table('data/orders.csv') extend {
   primary_key: id
 
   // Dimensions: row-level attributes to group by or filter on.
   dimension:
+    #" Date the order was placed.
     ordered_at is order_date::date
+    #" An order over $500. The threshold is a business convention.
     is_large_order is amount > 500
 
   // Measures: aggregations, defined once and reused everywhere.
   measure:
+    #" Number of orders.
     order_count is count()
+    #" Total order amount, including orders not yet completed.
     revenue is amount.sum()
 
   // Views: named, reusable query shapes.
+  #" Revenue and order count for each month.
   view: revenue_by_month is {
     group_by: ordered_at.month
     aggregate: revenue, order_count
@@ -68,6 +74,28 @@ run: orders -> {
 - A view is queried through its source (\`orders -> revenue_by_month\`); a
   \`query:\` declaration is already a complete query and runs on its own.
 
+## Doc strings
+
+A line beginning with \`#"\` above a definition is its description. Unlike a
+\`//\` comment it is part of the model: \`mora describe\` prints it, matches search
+patterns against it, and a served model hands it to whoever is asking. It is how
+a definition explains itself to a reader who was not in the room when it was
+agreed, so it is the difference between a name someone trusts and a name someone
+re-derives by hand.
+
+\`\`\`malloy
+#" Revenue from completed orders only. Excludes refunds and pending payments,
+#" so it is lower than \`revenue\` and is the figure finance reports.
+measure: completed_revenue is amount.sum() { where: status = 'completed' }
+\`\`\`
+
+Write what the number means and what it leaves out, not what the expression
+already says: "total order amount, before refunds" earns its place, "sums the
+amount column" does not. Consecutive \`#"\` lines form one description.
+
+A \`query:\` that only runs a view inherits that view's description, so give it a
+doc string of its own only when it adds something the view does not say.
+
 ## Naming
 
 A definition is read by people who did not write it, so name it the way a domain
@@ -79,7 +107,8 @@ expert would say it out loud: \`revenue\`, \`active_customers\`,
 
 1. Run \`mora describe\` to see what already exists. Reuse before adding.
 2. Read the file in \`${modelsDir}/\` you are about to change.
-3. Add the dimension, measure or view next to related definitions.
+3. Add the dimension, measure or view next to related definitions, with a \`#"\`
+   doc string on every new definition.
 4. Run \`mora validate\`. Because Malloy resolves table schemas while compiling,
    a pass means the model parses *and* the referenced columns really exist.
 5. Run the query with \`mora query\` and report the answer together with the
@@ -113,22 +142,25 @@ refused because files already exist.
 ## mora describe [pattern]
 
 Lists the vocabulary: every source in \`${modelsDir}/\` with its dimensions,
-measures, views and joins, plus the named queries that can be run directly.
-Start here, before writing any query, so an answer reuses a definition someone
-reviewed instead of inventing one.
+measures, views and joins, each with its doc string, plus the named queries that
+can be run directly. Start here, before writing any query, so an answer reuses a
+definition someone reviewed instead of inventing one.
 
-An optional \`pattern\` filters by name, case-insensitively, keeping the source
-each match belongs to:
+An optional \`pattern\` filters by name *and* by doc string, case-insensitively,
+keeping the source each match belongs to. Search the words a question uses, not
+just the identifier you expect:
 
 \`\`\`bash
 mora describe              # the whole vocabulary
-mora describe revenue      # only definitions whose name contains "revenue"
+mora describe revenue      # matches on name or description
+mora describe refund       # finds a measure documented as excluding refunds
 \`\`\`
 
 \`--json\` reports
 \`{ ok, command: 'describe', pattern, sources, queries, summary }\`, where each
-source carries \`{ name, model, dimensions, measures, views, joins }\` and each
-entry within those carries \`{ name, type }\`.
+source carries \`{ name, model, description, dimensions, measures, views, joins }\`
+and each entry within those carries \`{ name, type, description }\`. Report the
+description of any definition you use, so the reader gets its caveats too.
 
 ## mora query <name> | -e "<malloy>"
 

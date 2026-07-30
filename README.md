@@ -33,6 +33,8 @@ mora.yaml               # models directory + database connections
 metrics/
   example.malloy        # a source with dimensions, measures and views
   data/orders.csv       # sample data, so the example runs immediately
+  publisher.json        # makes metrics/ a package Malloy Publisher can serve
+publisher.config.json   # which packages a Publisher server should load
 AGENTS.md               # the rules your agent must follow, plus your own
 .agents/
   malloy.md             # how to write Malloy, loaded when editing a model
@@ -160,21 +162,27 @@ queries that can be run directly:
 $ mora describe revenue
 ┌   mora describe
 │
-◇  orders  metrics/example.malloy ─╮
-│  measures                        │
-│    revenue  number               │
-│    average_order_value  number   │
-│  views                           │
-│    revenue_by_month  view        │
-│    revenue_by_region  view       │
-├──────────────────────────────────╯
+◇  orders  metrics/example.malloy ──────────────────────────────────────╮
+│  One row per order, with the customer and region that placed it.      │
+│  measures                                                             │
+│    revenue  number                                                    │
+│      Total order amount, including orders that are not yet completed. │
+│    average_order_value  number                                        │
+│      Mean order amount. Skewed by large orders, so read it next to r… │
+│  views                                                                │
+│    revenue_by_month  view                                             │
+│      Revenue and order count for each month.                          │
+├───────────────────────────────────────────────────────────────────────╯
 │
-└  1 source, 2 measures, 0 dimensions, 2 views, 0 named queries.
+└  1 source, 2 measures, 0 dimensions, 3 views, 3 named queries.
 ```
 
-The optional pattern filters names case-insensitively, keeping the source each
-match belongs to. Searching and dumping are the same operation over the same
-index, which is also the index `mora query` resolves a name against — so
+Each definition arrives with its doc string, because a measure someone is about
+to trust should say what it excludes. The optional pattern matches names *and*
+descriptions, case-insensitively, keeping the source each match belongs to — so
+`mora describe refund` finds the measure documented as excluding refunds even
+when its name never says so. Searching and dumping are the same operation over
+the same index, which is also the index `mora query` resolves a name against, so
 anything `describe` lists can be run.
 
 ## `mora query`
@@ -251,20 +259,30 @@ argues with a rule your team wrote:
   `mora:begin`/`mora:end` markers and scaffolds a `## Team conventions` section
   below it. Anything outside the markers is yours and survives upgrades.
 
+The same split applies to configuration: `mora.yaml`, `publisher.config.json` and
+`metrics/publisher.json` are scaffolded once and then belong to the project, so
+adding a connection or an environment is never undone by a later `mora init`.
+
 ## What a model looks like
 
 ```malloy
-source: orders is duckdb.table('orders.csv') extend {
+#" One row per order, with the customer who placed it.
+source: orders is duckdb.table('data/orders.csv') extend {
   primary_key: id
 
   dimension:
+    #" Date the order was placed.
     ordered_at is order_date::date
+    #" An order over $500. The threshold is a business convention.
     is_large_order is amount > 500
 
   measure:
+    #" Number of orders.
     order_count is count()
+    #" Total order amount, including orders not yet completed.
     revenue is amount.sum()
 
+  #" Revenue and order count for each month.
   view: revenue_by_month is {
     group_by: ordered_at.month
     aggregate: revenue, order_count
@@ -277,13 +295,42 @@ query: monthly_revenue is orders -> revenue_by_month
 `revenue` is now defined in exactly one place. Every query that uses it, whether
 written by you or by an agent, means the same thing.
 
+The `#"` lines are doc strings, and they are part of the model rather than
+comments on it. `mora describe` prints them, searches them, and a served model
+hands them to whoever is asking — so a definition arrives with the caveats that
+make it safe to use.
+
+## Serve it with Publisher
+
+Mora is the authoring half of a semantic layer: it scaffolds the models, keeps
+them compiling, and puts every change to a definition through code review.
+[Malloy Publisher](https://github.com/malloydata/publisher) is the serving half:
+point it at a merged repo and it exposes the same models over REST and MCP, to
+BI tools, applications, and agents that never touch the checkout.
+
+`mora init` writes the two files Publisher needs, so a project is servable with
+no edits:
+
+```bash
+npx @malloy-publisher/server --server_root .
+```
+
+Table paths in a scaffolded model are relative to `metrics/`, which is what both
+Mora and Publisher resolve from, so the same `.malloy` file works in the CLI, in
+the VS Code Malloy extension, and on a server. `publisher.config.json` is yours
+once written — add warehouse connections and environments to it freely; Mora
+scaffolds it and then leaves it alone.
+
 ## Roadmap
 
 - A real BigQuery connection, so `validate`, `describe` and `query` run against
-  the warehouse instead of only DuckDB.
-- Semantic search over the model, for finding a definition by meaning rather than
-  by substring.
-- MCP server mode, for agents that prefer tools over shell commands.
+  the warehouse instead of only DuckDB. Publisher's own connection config stays
+  separate, so a served project can point at a different warehouse than a laptop.
+- `mora describe` growing from substring matching over names and doc strings into
+  real retrieval, so an agent can find a definition by meaning.
+- MCP over the development loop — `validate`, `describe` and `query` against a
+  checkout, for agents that prefer tools to shell commands. Serving finished
+  models over MCP is Publisher's job, and stays there.
 
 ## Development
 
@@ -304,6 +351,15 @@ node dist/cli.js init /tmp/demo --yes --json
 node dist/cli.js validate /tmp/demo --json
 node dist/cli.js describe -C /tmp/demo
 node dist/cli.js query monthly_revenue -C /tmp/demo
+```
+
+To check that a scaffolded project is still servable, run Publisher against it
+and query the same definition through its API. The two should agree:
+
+```bash
+cd /tmp/demo && npx @malloy-publisher/server --server_root .
+curl -X POST -H 'Content-Type: application/json' -d '{"queryName":"monthly_revenue"}' \
+  http://localhost:4000/api/v0/environments/default/packages/demo/models/example.malloy/query
 ```
 
 ## License

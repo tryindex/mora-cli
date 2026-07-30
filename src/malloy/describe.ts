@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { Explore, Model, Runtime } from '@malloydata/malloy';
+import type { Annotations, Explore, Model, Runtime } from '@malloydata/malloy';
 import { ExitCode, MoraError } from '../errors.js';
 import type { RuntimeRequest } from './runtime.js';
 import { describeError, openRuntime } from './runtime.js';
@@ -9,12 +9,15 @@ export interface FieldDescription {
   name: string;
   /** Data type for fields, join relationship for joins, `view` for views. */
   type: string;
+  /** The definition's doc string, when it has one. */
+  description?: string;
 }
 
 export interface SourceDescription {
   name: string;
   /** Model file the source is declared in, relative to the project root. */
   model: string;
+  description?: string;
   dimensions: FieldDescription[];
   measures: FieldDescription[];
   views: FieldDescription[];
@@ -24,6 +27,7 @@ export interface SourceDescription {
 export interface QueryDescription {
   name: string;
   model: string;
+  description?: string;
 }
 
 export interface ModelFailure {
@@ -85,17 +89,46 @@ export async function describeModels(
       vocabulary.sources.push(describeSource(explore, relativePath));
     }
     for (const name of model.queries().named) {
-      vocabulary.queries.push({ name, model: relativePath });
+      vocabulary.queries.push({
+        name,
+        model: relativePath,
+        description: readDescription(model.getPreparedQueryByName(name).annotations),
+      });
     }
   }
 
   return vocabulary;
 }
 
+/**
+ * Malloy's route for doc strings, written `#" what this means`. Descriptions are
+ * part of the model rather than comments on it, which is why they can be read
+ * back here and shown to whoever is choosing between definitions.
+ */
+const DOC_ROUTE = '"';
+
+/** Bracketed routes other tools have written descriptions on. */
+const LEGACY_DOC_ROUTES = ['doc', 'docs'];
+
+function readDescription(annotations: Annotations): string | undefined {
+  for (const route of [DOC_ROUTE, ...LEGACY_DOC_ROUTES]) {
+    // Consecutive doc lines are one description, so they read as one sentence
+    // rather than as separate facts.
+    const text = annotations
+      .forRoute(route)
+      .map((note) => note.content.trim())
+      .filter((line) => line.length > 0)
+      .join(' ');
+    if (text.length > 0) return text;
+  }
+  return undefined;
+}
+
 function describeSource(explore: Explore, model: string): SourceDescription {
   const source: SourceDescription = {
     name: explore.name,
     model,
+    description: readDescription(explore.annotations),
     dimensions: [],
     measures: [],
     views: [],
@@ -103,12 +136,13 @@ function describeSource(explore: Explore, model: string): SourceDescription {
   };
 
   for (const field of explore.allFields) {
+    const description = readDescription(field.annotations);
     if (field.isQueryField()) {
-      source.views.push({ name: field.name, type: 'view' });
+      source.views.push({ name: field.name, type: 'view', description });
     } else if (field.isExploreField()) {
-      source.joins.push({ name: field.name, type: field.joinRelationship });
+      source.joins.push({ name: field.name, type: field.joinRelationship, description });
     } else if (field.isAtomicField()) {
-      const described = { name: field.name, type: field.type };
+      const described = { name: field.name, type: field.type, description };
       // A calculation is an aggregate: the difference between "amount" and
       // "revenue is amount.sum()", which is the distinction that matters most
       // when an agent is choosing what to group by.
@@ -123,33 +157,40 @@ function describeSource(explore: Explore, model: string): SourceDescription {
   return source;
 }
 
-/** Restricts a vocabulary to names containing `pattern`, case-insensitively. */
+/**
+ * Restricts a vocabulary to definitions matching `pattern`, case-insensitively.
+ * Descriptions are searched alongside names, so a question phrased in business
+ * language ("refund") finds a definition named for the same thing in another
+ * vocabulary (`net_revenue`, documented as excluding refunds).
+ */
 export function filterVocabulary(vocabulary: Vocabulary, pattern: string): Vocabulary {
   const needle = pattern.toLowerCase();
-  const matches = (name: string) => name.toLowerCase().includes(needle);
+  const matches = (entry: { name: string; description?: string }) =>
+    entry.name.toLowerCase().includes(needle) ||
+    (entry.description?.toLowerCase().includes(needle) ?? false);
 
   const sources: SourceDescription[] = [];
   for (const source of vocabulary.sources) {
     // A source whose own name matches is shown whole: someone asking about
     // "orders" wants the vocabulary of orders, not the one field called orders.
-    if (matches(source.name)) {
+    if (matches(source)) {
       sources.push(source);
       continue;
     }
 
     const narrowed: SourceDescription = {
       ...source,
-      dimensions: source.dimensions.filter((field) => matches(field.name)),
-      measures: source.measures.filter((field) => matches(field.name)),
-      views: source.views.filter((field) => matches(field.name)),
-      joins: source.joins.filter((field) => matches(field.name)),
+      dimensions: source.dimensions.filter(matches),
+      measures: source.measures.filter(matches),
+      views: source.views.filter(matches),
+      joins: source.joins.filter(matches),
     };
     if (definitionCount(narrowed) > 0) sources.push(narrowed);
   }
 
   return {
     sources,
-    queries: vocabulary.queries.filter((query) => matches(query.name)),
+    queries: vocabulary.queries.filter(matches),
     failures: vocabulary.failures,
   };
 }

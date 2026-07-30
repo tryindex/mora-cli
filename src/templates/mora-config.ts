@@ -3,7 +3,6 @@ import type { DatabaseId } from '../databases.js';
 export interface MoraConfigOptions {
   projectName: string;
   modelsDir: string;
-  dataDir: string;
   database: DatabaseId;
   duckdbConnectionName: string;
   warehouseConnectionName: string;
@@ -38,7 +37,7 @@ function commentOut(text: string): string {
 }
 
 export function renderMoraConfig(options: MoraConfigOptions): string {
-  const { projectName, modelsDir, dataDir, database, duckdbConnectionName } = options;
+  const { projectName, modelsDir, database, duckdbConnectionName } = options;
   const warehouseName = options.warehouseConnectionName;
   const defaultConnection = database === 'duckdb' ? duckdbConnectionName : warehouseName;
 
@@ -77,7 +76,9 @@ connections:
     type: duckdb
     database: ':memory:'
     # Relative paths inside ${duckdbConnectionName}.table('...') resolve from here.
-    working_directory: ${dataDir}
+    # This is the models directory, which is also what Malloy Publisher resolves
+    # a package's table paths from, so models stay portable between the two.
+    working_directory: ${modelsDir}
 
 ${warehouseSections.join('\n\n')}
 `;

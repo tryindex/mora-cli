@@ -34,6 +34,8 @@ describe('buildScaffold', () => {
     const paths = buildScaffold(spec()).map((file) => file.path);
     expect(paths).toEqual([
       'mora.yaml',
+      'metrics/publisher.json',
+      'publisher.config.json',
       'metrics/data/orders.csv',
       'metrics/example.malloy',
       'AGENTS.md',
@@ -77,10 +79,12 @@ describe('generated mora.yaml', () => {
     expect(parsed.version).toBe(1);
     expect(parsed.project).toEqual({ name: 'analytics', models: 'metrics' });
     expect(parsed.connections.default).toBe('duckdb');
+    // The models directory, not the data directory: a table path written
+    // relative to the package root is what Publisher can also resolve.
     expect(parsed.connections.duckdb).toEqual({
       type: 'duckdb',
       database: ':memory:',
-      working_directory: 'metrics/data',
+      working_directory: 'metrics',
     });
   });
 
@@ -94,6 +98,38 @@ describe('generated mora.yaml', () => {
     expect(parsed.connections.warehouse?.type).toBe('bigquery');
     // DuckDB stays available so the project always has one usable connection.
     expect(parsed.connections.duckdb?.type).toBe('duckdb');
+  });
+});
+
+describe('generated Publisher files', () => {
+  function contents(overrides: Partial<ScaffoldSpec>, filePath: string): unknown {
+    const file = buildScaffold(spec(overrides)).find((candidate) => candidate.path === filePath);
+    return JSON.parse(file?.contents ?? 'null');
+  }
+
+  it('makes the models directory a package Publisher can serve', () => {
+    expect(contents({}, 'metrics/publisher.json')).toEqual({
+      name: 'analytics',
+      version: '0.0.1',
+      description: expect.stringContaining('analytics'),
+    });
+  });
+
+  it('points the server config at the models directory', () => {
+    expect(contents({ modelsDir: 'models/core' }, 'publisher.config.json')).toEqual({
+      frozenConfig: false,
+      environments: [
+        {
+          name: 'default',
+          packages: [{ name: 'analytics', location: './models/core' }],
+        },
+      ],
+    });
+  });
+
+  it('turns a project name into a package identifier', () => {
+    const parsed = contents({ projectName: 'Retail Analytics' }, 'metrics/publisher.json');
+    expect((parsed as { name: string }).name).toBe('retail-analytics');
   });
 });
 
@@ -129,6 +165,10 @@ describe('writeScaffold', () => {
 
     const conflicts = findConflicts(root, files);
     expect(conflicts).toContain('mora.yaml');
+    // Publisher config is the team's once written: it grows connections and
+    // access rules that a second `mora init` must not throw away.
+    expect(conflicts).toContain('publisher.config.json');
+    expect(conflicts).toContain('metrics/publisher.json');
     // .gitignore merges rather than replaces, so it is never a conflict.
     expect(conflicts).not.toContain('.gitignore');
     // Mora owns its own docs outright, so an older copy of one is not a conflict.
