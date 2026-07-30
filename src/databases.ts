@@ -1,4 +1,4 @@
-export const DATABASE_IDS = ['duckdb', 'bigquery', 'postgres', 'snowflake'] as const;
+export const DATABASE_IDS = ['duckdb', 'bigquery'] as const;
 
 export type DatabaseId = (typeof DATABASE_IDS)[number];
 
@@ -24,18 +24,6 @@ export const DATABASES: Record<DatabaseId, DatabaseInfo> = {
     id: 'bigquery',
     label: 'BigQuery',
     hint: 'requires a GCP project and credentials',
-    needsCredentials: true,
-  },
-  postgres: {
-    id: 'postgres',
-    label: 'PostgreSQL',
-    hint: 'requires host, database and credentials',
-    needsCredentials: true,
-  },
-  snowflake: {
-    id: 'snowflake',
-    label: 'Snowflake',
-    hint: 'requires account, warehouse and credentials',
     needsCredentials: true,
   },
 };

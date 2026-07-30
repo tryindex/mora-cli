@@ -8,6 +8,8 @@ import {
   buildScaffold,
   CONFIG_FILENAME,
   findConflicts,
+  MANAGED_BEGIN,
+  MANAGED_END,
   type ScaffoldSpec,
   writeScaffold,
 } from '../src/scaffold.js';
@@ -35,6 +37,8 @@ describe('buildScaffold', () => {
       'semantic/data/orders.csv',
       'semantic/example.malloy',
       'AGENTS.md',
+      '.agents/malloy.md',
+      '.agents/mora.md',
       '.gitignore',
     ]);
   });
@@ -85,9 +89,9 @@ describe('generated mora.yaml', () => {
   });
 
   it('activates the chosen warehouse and points the default at it', () => {
-    const parsed = config({ database: 'snowflake' });
+    const parsed = config({ database: 'bigquery' });
     expect(parsed.connections.default).toBe('warehouse');
-    expect(parsed.connections.warehouse?.type).toBe('snowflake');
+    expect(parsed.connections.warehouse?.type).toBe('bigquery');
     // DuckDB stays available so the project always has one usable connection.
     expect(parsed.connections.duckdb?.type).toBe('duckdb');
   });
@@ -105,6 +109,19 @@ describe('writeScaffold', () => {
     );
   });
 
+  it('gives AGENTS.md a heading above the managed block and a team section below it', async () => {
+    const root = await tempDir();
+    await writeScaffold(root, buildScaffold(spec()));
+
+    const contents = await readFile(path.join(root, 'AGENTS.md'), 'utf8');
+    const [begin, end] = [contents.indexOf(MANAGED_BEGIN), contents.indexOf(MANAGED_END)];
+
+    expect(contents.startsWith('# Working with the analytics semantic layer')).toBe(true);
+    expect(begin).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(begin);
+    expect(contents.indexOf('## Team conventions')).toBeGreaterThan(end);
+  });
+
   it('reports conflicts instead of silently replacing files', async () => {
     const root = await tempDir();
     const files = buildScaffold(spec());
@@ -114,6 +131,24 @@ describe('writeScaffold', () => {
     expect(conflicts).toContain('mora.yaml');
     // .gitignore merges rather than replaces, so it is never a conflict.
     expect(conflicts).not.toContain('.gitignore');
+    // Mora owns its own docs outright, so an older copy of one is not a conflict.
+    expect(conflicts).not.toContain('.agents/malloy.md');
+  });
+
+  it('rewrites its own docs only when they have changed', async () => {
+    const root = await tempDir();
+    const files = buildScaffold(spec());
+    await writeScaffold(root, files);
+
+    const again = await writeScaffold(root, files);
+    expect(again.find((file) => file.path === '.agents/mora.md')?.action).toBe('unchanged');
+
+    await writeFile(path.join(root, '.agents/mora.md'), 'an older version\n', 'utf8');
+    const refreshed = await writeScaffold(root, files);
+    expect(refreshed.find((file) => file.path === '.agents/mora.md')?.action).toBe('overwritten');
+    await expect(readFile(path.join(root, '.agents/mora.md'), 'utf8')).resolves.toContain(
+      'mora describe',
+    );
   });
 
   it('merges into an existing .gitignore without duplicating entries', async () => {

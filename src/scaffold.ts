@@ -3,14 +3,23 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { DatabaseId } from './databases.js';
+import { collectEnvVars, ENV_EXAMPLE_FILENAME } from './env.js';
 import { MoraError } from './errors.js';
+import {
+  type AgentDocsOptions,
+  renderMalloyGuide,
+  renderMoraGuide,
+} from './templates/agent-docs.js';
 import { renderAgentsDoc } from './templates/agents-doc.js';
+import { renderEnvExample } from './templates/env.js';
 import { renderExampleModel } from './templates/example-model.js';
 import { renderMoraConfig } from './templates/mora-config.js';
 import { SAMPLE_ORDERS_CSV } from './templates/sample-data.js';
 
 export const CONFIG_FILENAME = 'mora.yaml';
 export const AGENTS_FILENAME = 'AGENTS.md';
+/** Docs Mora owns outright, kept out of AGENTS.md so upgrades never conflict. */
+export const AGENT_DOCS_DIR = '.agents';
 export const EXAMPLE_MODEL_FILENAME = 'example.malloy';
 export const SAMPLE_DATA_FILENAME = 'orders.csv';
 export const DUCKDB_CONNECTION_NAME = 'duckdb';
@@ -24,13 +33,23 @@ export interface ScaffoldSpec {
   includeExample: boolean;
 }
 
-export type WriteStrategy = 'replace' | 'merge-lines';
+export type WriteStrategy = 'replace' | 'merge-lines' | 'managed-block';
+
+export const MANAGED_BEGIN = '<!-- mora:begin managed -->';
+export const MANAGED_END = '<!-- mora:end managed -->';
 
 export interface ScaffoldFile {
   /** Path relative to the project root, using forward slashes. */
   path: string;
   contents: string;
   strategy: WriteStrategy;
+  /** Text placed around the block, outside what Mora rewrites later. */
+  surround?: { before?: string; after?: string };
+  /**
+   * Mora owns this file entirely and rewrites it on every run, so an existing
+   * copy is a previous version of Mora's own output rather than a conflict.
+   */
+  owned?: boolean;
 }
 
 export type FileAction = 'created' | 'overwritten' | 'updated' | 'unchanged';
@@ -64,23 +83,35 @@ export function resolvePaths(spec: ScaffoldSpec): ScaffoldPaths {
   };
 }
 
-const GITIGNORE_ENTRIES = ['# Mora', '.mora/', '*.duckdb', '*.duckdb.wal', '.env', '.env.*'];
+const GITIGNORE_ENTRIES = [
+  '# Mora',
+  '.mora/',
+  '*.duckdb',
+  '*.duckdb.wal',
+  '.env',
+  '.env.*',
+  // The example is the one env file that belongs in version control: it tells a
+  // teammate which credentials to set without carrying any of them.
+  `!${ENV_EXAMPLE_FILENAME}`,
+];
 
 export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
   const paths = resolvePaths(spec);
   const files: ScaffoldFile[] = [];
 
+  const config = renderMoraConfig({
+    projectName: spec.projectName,
+    modelsDir: paths.modelsDir,
+    dataDir: paths.dataDir,
+    database: spec.database,
+    duckdbConnectionName: DUCKDB_CONNECTION_NAME,
+    warehouseConnectionName: WAREHOUSE_CONNECTION_NAME,
+  });
+
   files.push({
     path: paths.configPath,
     strategy: 'replace',
-    contents: renderMoraConfig({
-      projectName: spec.projectName,
-      modelsDir: paths.modelsDir,
-      dataDir: paths.dataDir,
-      database: spec.database,
-      duckdbConnectionName: DUCKDB_CONNECTION_NAME,
-      warehouseConnectionName: WAREHOUSE_CONNECTION_NAME,
-    }),
+    contents: config,
   });
 
   if (spec.includeExample) {
@@ -107,18 +138,42 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
     });
   }
 
+  const agentsDoc = renderAgentsDoc({
+    projectName: spec.projectName,
+    modelsDir: paths.modelsDir,
+    dataDir: paths.dataDir,
+    exampleModelPath: paths.exampleModelPath,
+    hasExample: spec.includeExample,
+    agentDocsDir: AGENT_DOCS_DIR,
+  });
+
   files.push({
     path: paths.agentsPath,
-    strategy: 'replace',
-    contents: renderAgentsDoc({
-      projectName: spec.projectName,
-      modelsDir: paths.modelsDir,
-      dataDir: paths.dataDir,
-      exampleModelPath: paths.exampleModelPath,
-      connectionName: DUCKDB_CONNECTION_NAME,
-      hasExample: spec.includeExample,
-    }),
+    // A team adds its own conventions to AGENTS.md, and those must survive Mora
+    // rewriting the part it owns.
+    strategy: 'managed-block',
+    contents: agentsDoc.managed,
+    surround: { before: agentsDoc.title, after: agentsDoc.teamSection },
   });
+
+  files.push(
+    ...buildAgentDocs({
+      modelsDir: paths.modelsDir,
+      connectionName: DUCKDB_CONNECTION_NAME,
+    }),
+  );
+
+  // Derived from the config we just rendered, so the two can never disagree
+  // about which credentials the project needs. A DuckDB-only project references
+  // none, and then there is nothing worth committing.
+  const variables = collectEnvVars(parseYaml(config));
+  if (variables.length > 0) {
+    files.push({
+      path: ENV_EXAMPLE_FILENAME,
+      strategy: 'replace',
+      contents: renderEnvExample({ projectName: spec.projectName, variables }),
+    });
+  }
 
   files.push({
     path: '.gitignore',
@@ -129,10 +184,36 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
   return files;
 }
 
+/**
+ * The docs Mora writes and keeps current. Kept separate from the rest of the
+ * scaffold so `mora init` can refresh them in a project it did not create,
+ * rather than leaving a checkout frozen at whichever version of Mora scaffolded
+ * it.
+ */
+export function buildAgentDocs(options: AgentDocsOptions): ScaffoldFile[] {
+  return [
+    {
+      path: `${AGENT_DOCS_DIR}/malloy.md`,
+      strategy: 'replace',
+      owned: true,
+      contents: renderMalloyGuide(options),
+    },
+    {
+      path: `${AGENT_DOCS_DIR}/mora.md`,
+      strategy: 'replace',
+      owned: true,
+      contents: renderMoraGuide(options),
+    },
+  ];
+}
+
 /** Files that already exist and would lose their current contents. */
 export function findConflicts(root: string, files: ScaffoldFile[]): string[] {
   return files
-    .filter((file) => file.strategy === 'replace' && existsSync(path.join(root, file.path)))
+    .filter(
+      (file) =>
+        file.strategy === 'replace' && !file.owned && existsSync(path.join(root, file.path)),
+    )
     .map((file) => file.path);
 }
 
@@ -148,12 +229,75 @@ export async function writeScaffold(root: string, files: ScaffoldFile[]): Promis
       continue;
     }
 
-    const existed = existsSync(absolute);
+    if (file.strategy === 'managed-block') {
+      written.push(await writeManagedBlock(absolute, file));
+      continue;
+    }
+
+    if (!existsSync(absolute)) {
+      await writeFile(absolute, file.contents, 'utf8');
+      written.push({ path: file.path, action: 'created' });
+      continue;
+    }
+
+    // Rewriting a file with what it already contains is not worth reporting, and
+    // for the docs Mora refreshes on every run it would be all a report said.
+    const current = await readFile(absolute, 'utf8');
+    if (current === file.contents) {
+      written.push({ path: file.path, action: 'unchanged' });
+      continue;
+    }
+
     await writeFile(absolute, file.contents, 'utf8');
-    written.push({ path: file.path, action: existed ? 'overwritten' : 'created' });
+    written.push({ path: file.path, action: 'overwritten' });
   }
 
   return written;
+}
+
+/**
+ * Rewrites only the region Mora owns, leaving anything a team wrote around it
+ * intact. A file that predates the markers keeps its contents and gains the
+ * block at the end, which is friendlier than refusing to touch it.
+ */
+async function writeManagedBlock(absolute: string, file: ScaffoldFile): Promise<WrittenFile> {
+  const block = `${MANAGED_BEGIN}\n${file.contents.trimEnd()}\n${MANAGED_END}\n`;
+  const before = file.surround?.before?.trimEnd();
+  const after = file.surround?.after?.trim();
+
+  if (!existsSync(absolute)) {
+    await writeFile(absolute, join([before, block.trimEnd(), after]), 'utf8');
+    return { path: file.path, action: 'created' };
+  }
+
+  const current = await readFile(absolute, 'utf8');
+  const start = current.indexOf(MANAGED_BEGIN);
+  const end = current.indexOf(MANAGED_END);
+  const hasBlock = start !== -1 && end > start;
+
+  let updated: string;
+  if (!hasBlock) {
+    updated = `${current.trimEnd()}\n\n${block}`;
+  } else {
+    const above = current.slice(0, start);
+    // A block sitting at the top of the file has lost its heading, or never had
+    // one. Restoring it keeps the document readable without touching anything a
+    // team wrote. There is deliberately no matching rule for the text below: a
+    // section someone chose to delete should stay deleted.
+    const heading = above.trim().length === 0 && before ? `${before}\n\n` : above;
+    updated = heading + block.trimEnd() + current.slice(end + MANAGED_END.length);
+  }
+
+  if (updated === current) {
+    return { path: file.path, action: 'unchanged' };
+  }
+
+  await writeFile(absolute, updated, 'utf8');
+  return { path: file.path, action: 'updated' };
+}
+
+function join(sections: (string | undefined)[]): string {
+  return `${sections.filter((section) => section && section.length > 0).join('\n\n')}\n`;
 }
 
 async function mergeLines(absolute: string, file: ScaffoldFile): Promise<WrittenFile> {

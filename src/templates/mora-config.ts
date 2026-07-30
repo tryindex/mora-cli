@@ -12,30 +12,14 @@ export interface MoraConfigOptions {
 const WAREHOUSE_BLOCKS: Record<Exclude<DatabaseId, 'duckdb'>, (name: string) => string> = {
   bigquery: (name) => `${name}:
   type: bigquery
-  project_id: my-gcp-project
+  project_id: \${GOOGLE_CLOUD_PROJECT}
   # Where Malloy may write temporary results.
   # dataset: malloy_temp
   # location: US
-  # Omit to use Application Default Credentials (\`gcloud auth application-default login\`).
-  # service_account_key_path: ./service-account.json`,
-
-  postgres: (name) => `${name}:
-  type: postgres
-  host: localhost
-  port: 5432
-  database: analytics
-  schema: public
-  username: \${POSTGRES_USER}
-  password: \${POSTGRES_PASSWORD}`,
-
-  snowflake: (name) => `${name}:
-  type: snowflake
-  account: my-account
-  warehouse: COMPUTE_WH
-  database: ANALYTICS
-  schema: PUBLIC
-  username: \${SNOWFLAKE_USER}
-  password: \${SNOWFLAKE_PASSWORD}`,
+  # Credentials come from Application Default Credentials
+  # (\`gcloud auth application-default login\`). To use a service account
+  # instead, point this at its key file:
+  # service_account_key_path: \${GOOGLE_APPLICATION_CREDENTIALS}`,
 };
 
 function indent(text: string, spaces: number): string {

@@ -1,7 +1,10 @@
 import { createRequire } from 'node:module';
 import { Command, CommanderError } from 'commander';
 import pc from 'picocolors';
+import { registerDescribeCommand } from './commands/describe.js';
 import { registerInitCommand } from './commands/init.js';
+import { registerQueryCommand } from './commands/query.js';
+import { registerValidateCommand } from './commands/validate.js';
 import { ExitCode, type MoraError, toMoraError } from './errors.js';
 
 const requirePackage = createRequire(import.meta.url);
@@ -24,6 +27,9 @@ function buildProgram(): Command {
     });
 
   registerInitCommand(program);
+  registerValidateCommand(program);
+  registerDescribeCommand(program);
+  registerQueryCommand(program);
 
   return program;
 }
