@@ -44,9 +44,10 @@ Three consequences follow, and they are the whole design:
 Mora is the **authoring** half of a semantic layer. Deliberately out of scope:
 
 - **Serving models.** [Malloy Publisher](https://github.com/malloydata/publisher)
-  exposes models over REST and MCP to BI tools and applications. Mora scaffolds
-  the files Publisher needs and otherwise stays out of its way. We do not build a
-  server, and we do not edit `publisher.config.json`.
+  exposes models over REST and MCP to BI tools and applications. `mora plugin add
+  publisher` writes the files Publisher needs and otherwise stays out of its way.
+  We do not build a server, and we do not edit `publisher.config.json` after
+  writing it.
 - **Being a BI tool.** No dashboards, no charts, no saved-report management.
   `mora query` prints rows so an answer can be checked, not so it can be
   presented.
@@ -119,6 +120,13 @@ ask. Every Mora project keeping them in the same place is worth more than the
 choice, and it lets the docs an agent reads name the directory outright. Escape
 hatches stay (`--models`), but they are not prompts.
 
+**A scaffold is the semantic layer, and nothing else.** Anything a project might
+not need is a plugin it opts into with `mora plugin add`, not a file `init`
+writes on the chance it is wanted. What Mora installs, it must also be able to
+remove cleanly: `remove` re-runs a plugin's `setup` to learn what it owns and
+what it looked like untouched, which is why there is no separate teardown to
+drift out of sync.
+
 **Working in one command.** DuckDB and a sample CSV mean a fresh project compiles
 and answers a question before any credential exists. Never let the empty state
 require setup.
@@ -129,6 +137,7 @@ require setup.
 src/cli.ts            registers commands, renders top-level failures
 src/commands/*.ts     one file per command: flags, prompts, prose, JSON report
 src/malloy/*.ts       the only code that imports Malloy
+src/plugins/*.ts      the plugin interface, the built-ins, and the loader
 src/templates/*.ts    pure render functions, no I/O
 src/*.ts              domain: config, connections, env, scaffold, migrate,
                       version, update-check, project, errors, databases
@@ -145,13 +154,18 @@ Rules that keep the layers honest:
   their output.
 - **Commands do not parse.** A command file reads flags, calls domain functions,
   and formats the result. YAML parsing lives in `config.ts`, YAML *editing* in
-  `connections.ts`, environment resolution in `env.ts`. If a command starts
-  reaching for `yaml`, the logic belongs one layer down.
+  `connections.ts` and `plugins/config.ts`, environment resolution in `env.ts`. If
+  a command starts reaching for `yaml`, the logic belongs one layer down.
 - **`openProject` is the front door.** Commands that touch models load through it,
   so `validate`, `describe` and `query` fail identically on the same problems.
 - **The connection registry is one place.** `src/databases.ts` declares what each
   database needs; prompts, CLI flags and the YAML that gets written all derive
   from it, so they cannot drift.
+- **Third-party plugin code runs only when someone names it.** `mora plugin add
+  <name>` is the one command that may install and import a package. Nothing else
+  imports from `.mora/plugins/` — notably not `mora upgrade`, which renders
+  AGENTS.md and must not execute a package to do it. That is why `agentsNote` is
+  honoured for built-ins only.
 
 ## Anatomy of a command
 
@@ -221,6 +235,21 @@ Recorded so they are not rediscovered by accident:
   for exactly this reason. Offering a knob that does nothing is a lie.
 - **`init` join mode skips compiling when a credential is unset,** rather than
   failing every model with the message it just printed.
+- **Publisher is a plugin, not part of the scaffold.** A project that will never
+  be served should not carry two JSON files explaining how to serve it. The
+  extension point is a plugin because "add a Publisher command" and "add a plugin
+  system whose first plugin is Publisher" cost about the same, and only one of
+  them means the next integration is not another flag on `init`.
+- **`mora plugin`, singular, in the group grammar.** It matches
+  `mora connection add`, and `mora add` would not say what is being added.
+- **Plugins are recorded in `mora.yaml`,** not inferred from files on disk. A
+  teammate cloning the repo can then be *told* which integrations the project
+  uses and which are missing locally, instead of Mora guessing from a file that
+  might have been deleted by hand.
+- **A refused `remove` writes nothing at all.** Deleting some files and leaving
+  others, or unrecording a plugin whose files are still there, is the half-success
+  the principles rule out. Modified files are detected first, then the command
+  either goes through or does not start.
 
 ## Where this goes next
 
@@ -236,10 +265,15 @@ In rough order, and each one should stay recognisable as the same tool:
 3. **MCP over the development loop.** `validate`, `describe` and `query` against a
    checkout, for agents that prefer tools to shell commands. Serving finished
    models over MCP is Publisher's job and stays there.
+4. **More plugins.** The interface is one function on purpose. Grow it only when a
+   real integration cannot be expressed as "these files, these gitignore lines,
+   these next steps" — a plugin that wants to register a command or hook
+   `validate` is a request to redesign this, not a flag to add.
 
 `mora upgrade` is shipped: it refreshes `.agents/`, the managed `AGENTS.md`
 block, and the `cli_version` stamp, with an empty migration list ready for the
 first schema change. Future config shape changes belong in `src/migrate.ts`.
+`plugins:` needed no migration because an absent key means no plugins.
 
 ## Before you call it done
 

@@ -138,9 +138,9 @@ Read this before running a \`mora\` command.
 Every command accepts \`--json\` for a machine-readable report instead of prose,
 and runs against the current directory unless told otherwise: \`init\` and
 \`validate\` take the project directory as their argument, while \`describe\`,
-\`query\` and \`connection\` take it as \`-C <dir>\`, because their own argument is
-a name. Exit codes are the same everywhere: \`0\` success, \`1\` failure, \`2\` bad
-usage, \`3\` refused because files already exist.
+\`query\`, \`connection\` and \`plugin\` take it as \`-C <dir>\`, because their own
+argument is a name. Exit codes are the same everywhere: \`0\` success, \`1\`
+failure, \`2\` bad usage, \`3\` refused because files already exist.
 
 ## mora describe [pattern]
 
@@ -232,6 +232,35 @@ cannot do it for them. Run without \`--project-id\`, a human is also shown a
 searchable list of the projects their credentials can query, narrowed to the ones
 holding a dataset they can read — which is why an unattended run must pass the
 project explicitly rather than expect a default.
+
+## mora plugin list | add <name> | remove <name>
+
+A plugin is an optional integration the project opts into. \`mora plugin list\`
+shows what Mora offers and what this project uses; each entry reports \`added\`
+(recorded in \`mora.yaml\`) separately from \`installed\` (usable in this checkout),
+because a third-party plugin's package lives in the gitignored \`.mora/plugins/\`
+and so is missing from a fresh clone.
+
+\`\`\`bash
+mora plugin list --json
+mora plugin add publisher            # serve these models with Malloy Publisher
+mora plugin remove publisher
+\`\`\`
+
+Adding writes files the project then owns, records the plugin in \`mora.yaml\`, and
+puts a note in the managed block of AGENTS.md. Commit the result. Re-running add
+is safe: a file that already matches is left alone, and a file the team has since
+edited is kept rather than overwritten.
+
+Removing deletes only the files the plugin would write today. If any of them has
+local edits the command refuses with exit \`3\` and writes nothing at all, so a
+failed remove never leaves the project half changed — pass \`--force\` to delete
+them anyway, or \`--keep-files\` to keep the files and only stop tracking the
+plugin. The report lists every file as \`deleted\`, \`kept-modified\`,
+\`kept-by-flag\` or \`missing\`.
+
+Do not add a plugin because a question was hard to answer; ask the person you are
+working with first. A plugin changes what the repository contains.
 
 ## mora upgrade
 

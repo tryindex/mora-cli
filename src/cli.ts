@@ -4,6 +4,7 @@ import pc from 'picocolors';
 import { registerConnectionCommand } from './commands/connection.js';
 import { registerDescribeCommand } from './commands/describe.js';
 import { registerInitCommand } from './commands/init.js';
+import { registerPluginCommand } from './commands/plugin.js';
 import { registerQueryCommand } from './commands/query.js';
 import { registerUpgradeCommand } from './commands/upgrade.js';
 import { registerValidateCommand } from './commands/validate.js';
@@ -36,6 +37,7 @@ function buildProgram(): Command {
   registerDescribeCommand(program);
   registerQueryCommand(program);
   registerConnectionCommand(program);
+  registerPluginCommand(program);
 
   return program;
 }

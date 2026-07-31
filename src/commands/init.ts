@@ -23,6 +23,8 @@ import {
 } from '../env.js';
 import { ExitCode, MoraError } from '../errors.js';
 import { type CompileResult, compileModel } from '../malloy/compile.js';
+import { isPluginInstalled } from '../plugins/loader.js';
+import { isBuiltInPlugin } from '../plugins/registry.js';
 import {
   assertConfigParses,
   buildScaffold,
@@ -101,6 +103,12 @@ export interface JoinReport extends ProjectValidation {
   };
   files: WrittenFile[];
   environment: EnvironmentReport;
+  /**
+   * Plugins the project records, and whether each one is usable here. Join mode
+   * never installs them: fetching a package a teammate committed a reference to
+   * is a decision the reader makes by naming it.
+   */
+  plugins: { name: string; installed: boolean }[];
   /**
    * How the running CLI compares to the project's `cli_version` stamp.
    * Join mode never rewrites Mora-owned docs; it points at `mora upgrade`.
@@ -405,6 +413,8 @@ async function runJoin(root: string, flags: InitFlags): Promise<JoinReport> {
         : undefined,
   });
 
+  const plugins = describePlugins(config);
+
   const report: JoinReport = {
     ok: validation.summary.failed === 0 && environment.missing.length === 0,
     command: 'init',
@@ -413,9 +423,10 @@ async function runJoin(root: string, flags: InitFlags): Promise<JoinReport> {
     project: { name: config.projectName, models: config.modelsDir },
     files,
     environment,
+    plugins,
     upgrade,
     ...validation,
-    nextSteps: joinNextSteps(config, environment, validation, upgradeStatus),
+    nextSteps: joinNextSteps(config, environment, validation, upgradeStatus, plugins),
   };
 
   if (prose) {
@@ -469,13 +480,36 @@ function upgradeMessage(status: UpgradeStatus, projectVersion: string | undefine
   }
 }
 
+/**
+ * A built-in plugin is always usable; a third-party one lives in the checkout's
+ * own `.mora/plugins/`, which is gitignored and therefore empty in a fresh clone.
+ */
+function describePlugins(config: MoraConfig): { name: string; installed: boolean }[] {
+  return config.plugins.map((entry) => ({
+    name: entry.name,
+    installed:
+      isBuiltInPlugin(entry.name) ||
+      (entry.package !== undefined && isPluginInstalled(config.root, entry.package)),
+  }));
+}
+
 function joinNextSteps(
   config: MoraConfig,
   environment: EnvironmentReport,
   validation: ProjectValidation,
   upgradeStatus: UpgradeStatus,
+  plugins: { name: string; installed: boolean }[],
 ): string[] {
   const steps: string[] = [];
+
+  const uninstalled = plugins.filter((plugin) => !plugin.installed);
+  if (uninstalled.length > 0) {
+    steps.push(
+      `Install the plugins this project uses: ${uninstalled
+        .map((plugin) => `\`mora plugin add ${plugin.name}\``)
+        .join(', ')}.`,
+    );
+  }
 
   if (upgradeStatus === 'pending') {
     steps.push('Run `mora upgrade` to refresh Mora-owned docs and stamp this CLI version.');
@@ -526,6 +560,18 @@ function reportJoin(report: JoinReport): void {
 
   if (report.environment.required.length > 0) {
     prompts.note(environmentLines(report.environment).join('\n'), 'Credentials');
+  }
+
+  if (report.plugins.length > 0) {
+    prompts.note(
+      report.plugins
+        .map(
+          (plugin) =>
+            `${plugin.installed ? pc.green('    ok') : pc.yellow(' missing')} ${plugin.name}`,
+        )
+        .join('\n'),
+      'Plugins',
+    );
   }
 
   printModelResults(report.models, report.project.models);
@@ -787,6 +833,10 @@ function nextSteps(
       : `Add sources over your own tables in ${spec.modelsDir}/.`,
   );
   steps.push('Point your agent at AGENTS.md so it queries through the semantic layer.');
+  steps.push(
+    'Run `mora plugin add publisher` when these models should also be served over ' +
+      'REST and MCP by Malloy Publisher.',
+  );
   return steps;
 }
 

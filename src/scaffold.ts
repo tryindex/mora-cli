@@ -14,12 +14,6 @@ import { renderAgentsDoc } from './templates/agents-doc.js';
 import { renderEnvExample } from './templates/env.js';
 import { renderExampleModel } from './templates/example-model.js';
 import { renderMoraConfig } from './templates/mora-config.js';
-import {
-  PUBLISHER_CONFIG_FILENAME,
-  PUBLISHER_MANIFEST_FILENAME,
-  renderPublisherConfig,
-  renderPublisherManifest,
-} from './templates/publisher.js';
 import { SAMPLE_ORDERS_CSV } from './templates/sample-data.js';
 import { CLI_VERSION } from './version.js';
 
@@ -87,10 +81,6 @@ export interface ScaffoldPaths {
    * servable as-is instead of only compiling under Mora.
    */
   sampleTablePath: string;
-  /** Package manifest, which lives beside the models it describes. */
-  publisherManifestPath: string;
-  /** Server config, which Publisher reads from the directory it starts in. */
-  publisherConfigPath: string;
   connectionName: string;
 }
 
@@ -106,8 +96,6 @@ export function resolvePaths(spec: ScaffoldSpec): ScaffoldPaths {
     exampleModelPath: `${modelsDir}/${EXAMPLE_MODEL_FILENAME}`,
     sampleDataPath: `${modelsDir}/${sampleTablePath}`,
     sampleTablePath,
-    publisherManifestPath: `${modelsDir}/${PUBLISHER_MANIFEST_FILENAME}`,
-    publisherConfigPath: PUBLISHER_CONFIG_FILENAME,
     connectionName: spec.database === 'duckdb' ? DUCKDB_CONNECTION_NAME : WAREHOUSE_CONNECTION_NAME,
   };
 }
@@ -117,11 +105,6 @@ const GITIGNORE_ENTRIES = [
   '.mora/',
   '*.duckdb',
   '*.duckdb.wal',
-  // Malloy Publisher's persisted state and its copies of served packages. The
-  // config that produces them is committed; these are per-machine.
-  'publisher.db',
-  'publisher.db.wal',
-  'publisher_data/',
   '.env',
   '.env.*',
   // The example is the one env file that belongs in version control: it tells a
@@ -150,20 +133,6 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
     path: paths.configPath,
     strategy: 'replace',
     contents: config,
-  });
-
-  // Scaffolded once and then the team's, like mora.yaml: a Publisher config
-  // grows warehouse connections and access rules that Mora must not clobber.
-  const publisher = { projectName: spec.projectName, modelsDir: paths.modelsDir };
-  files.push({
-    path: paths.publisherManifestPath,
-    strategy: 'replace',
-    contents: renderPublisherManifest(publisher),
-  });
-  files.push({
-    path: paths.publisherConfigPath,
-    strategy: 'replace',
-    contents: renderPublisherConfig(publisher),
   });
 
   if (spec.includeExample) {

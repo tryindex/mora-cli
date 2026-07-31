@@ -34,8 +34,6 @@ describe('buildScaffold', () => {
     const paths = buildScaffold(spec()).map((file) => file.path);
     expect(paths).toEqual([
       'mora.yaml',
-      'metrics/publisher.json',
-      'publisher.config.json',
       'metrics/data/orders.csv',
       'metrics/example.malloy',
       'AGENTS.md',
@@ -43,6 +41,12 @@ describe('buildScaffold', () => {
       '.agents/mora.md',
       '.gitignore',
     ]);
+  });
+
+  it('leaves optional integrations to `mora plugin add`', () => {
+    const paths = buildScaffold(spec()).map((file) => file.path);
+    expect(paths).not.toContain('publisher.config.json');
+    expect(paths).not.toContain('metrics/publisher.json');
   });
 
   it('drops the example but keeps the models directory when asked', () => {
@@ -141,38 +145,6 @@ describe('generated mora.yaml', () => {
   });
 });
 
-describe('generated Publisher files', () => {
-  function contents(overrides: Partial<ScaffoldSpec>, filePath: string): unknown {
-    const file = buildScaffold(spec(overrides)).find((candidate) => candidate.path === filePath);
-    return JSON.parse(file?.contents ?? 'null');
-  }
-
-  it('makes the models directory a package Publisher can serve', () => {
-    expect(contents({}, 'metrics/publisher.json')).toEqual({
-      name: 'analytics',
-      version: '0.0.1',
-      description: expect.stringContaining('analytics'),
-    });
-  });
-
-  it('points the server config at the models directory', () => {
-    expect(contents({ modelsDir: 'models/core' }, 'publisher.config.json')).toEqual({
-      frozenConfig: false,
-      environments: [
-        {
-          name: 'default',
-          packages: [{ name: 'analytics', location: './models/core' }],
-        },
-      ],
-    });
-  });
-
-  it('turns a project name into a package identifier', () => {
-    const parsed = contents({ projectName: 'Retail Analytics' }, 'metrics/publisher.json');
-    expect((parsed as { name: string }).name).toBe('retail-analytics');
-  });
-});
-
 describe('writeScaffold', () => {
   it('creates every file and reports the action taken', async () => {
     const root = await tempDir();
@@ -205,10 +177,7 @@ describe('writeScaffold', () => {
 
     const conflicts = findConflicts(root, files);
     expect(conflicts).toContain('mora.yaml');
-    // Publisher config is the team's once written: it grows connections and
-    // access rules that a second `mora init` must not throw away.
-    expect(conflicts).toContain('publisher.config.json');
-    expect(conflicts).toContain('metrics/publisher.json');
+    expect(conflicts).toContain('metrics/example.malloy');
     // .gitignore merges rather than replaces, so it is never a conflict.
     expect(conflicts).not.toContain('.gitignore');
     // Mora owns its own docs outright, so an older copy of one is not a conflict.

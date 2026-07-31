@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import { type InitFlags, runInit } from '../src/commands/init.js';
+import { runPluginAdd } from '../src/commands/plugin.js';
 import { runUpgrade, type UpgradeFlags } from '../src/commands/upgrade.js';
 import type { MoraError } from '../src/errors.js';
 import { MANAGED_BEGIN, MANAGED_END } from '../src/scaffold.js';
@@ -152,6 +153,21 @@ describe('mora upgrade', () => {
     const updated = await readFile(configPath, 'utf8');
     expect(updated).toContain('# Mora semantic layer configuration.');
     expect(updated).toContain(`cli_version: ${CLI_VERSION}`);
+  });
+
+  it('keeps a plugin note in the managed block it rewrites', async () => {
+    const root = await scaffoldedProject();
+    await runPluginAdd(root, 'publisher', { json: true });
+    const configPath = path.join(root, 'mora.yaml');
+    const original = await readFile(configPath, 'utf8');
+    await writeFile(configPath, original.replace(/^cli_version:.*/m, 'cli_version: 0.0.1'), 'utf8');
+
+    await runUpgrade(root, upgradeFlags());
+
+    // The note comes from the plugins mora.yaml records, so an upgrade neither
+    // loses it nor invents one for a plugin the project does not use.
+    const agents = await readFile(path.join(root, 'AGENTS.md'), 'utf8');
+    expect(agents).toContain('publisher.config.json');
   });
 
   it('is a no-op when already current', async () => {

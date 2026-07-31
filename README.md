@@ -33,8 +33,6 @@ mora.yaml               # models directory + database connections
 metrics/
   example.malloy        # a source with dimensions, measures and views
   data/orders.csv       # sample data, so the example runs immediately
-  publisher.json        # makes metrics/ a package Malloy Publisher can serve
-publisher.config.json   # which packages a Publisher server should load
 AGENTS.md               # the rules your agent must follow, plus your own
 .agents/
   malloy.md             # how to write Malloy, loaded when editing a model
@@ -206,9 +204,8 @@ option away, under `Show all N projects`. If it cannot tell (no permission to li
 datasets, or too many projects to check quickly), every project is offered rather
 than a shortlist that might be missing yours.
 
-A Publisher server keeps its own connection config — Mora does not edit
-`publisher.config.json`, so a served project can read from a different warehouse
-than your laptop does.
+Adding a connection here does not make it usable by a Publisher server, which
+keeps its own connection config. See [`mora plugin`](#mora-plugin).
 
 ## `mora validate`
 
@@ -335,11 +332,12 @@ npx @moradata/cli init
 ```
 
 That copies `.env.example` to a gitignored `.env`, tells you which credentials are
-still empty, notes when the project needs `mora upgrade` (or a newer CLI), and
-compiles the committed models so you know the checkout works before you touch
-anything. Models, `mora.yaml` and your team's own writing are read-only to it.
-Exit code `0` means ready to use; `1` means a credential is unset or a model
-failed to compile, and the report says which.
+still empty, notes when the project needs `mora upgrade` (or a newer CLI), lists
+the plugins the project uses and whether each is installed here, and compiles the
+committed models so you know the checkout works before you touch anything.
+Models, `mora.yaml` and your team's own writing are read-only to it. Exit code `0`
+means ready to use; `1` means a credential is unset or a model failed to compile,
+and the report says which.
 
 The `.env.example` is generated from the connections in `mora.yaml`, so the list of
 required variables comes from the project rather than from a README someone has to
@@ -383,9 +381,9 @@ a rule your team wrote:
   `mora:begin`/`mora:end` markers and scaffolds a `## Team conventions` section
   below it. Anything outside the markers is yours and survives upgrades.
 
-The same split applies to configuration: `mora.yaml`, `publisher.config.json` and
-`metrics/publisher.json` are scaffolded once and then belong to the project, so
-adding a connection or an environment is never undone by a later `mora init`.
+The same split applies to configuration: `mora.yaml` and anything a plugin writes
+are created once and then belong to the project, so adding a connection or an
+environment is never undone by a later `mora init`.
 `mora connection add` and `mora upgrade` are the exceptions that prove it — they
 edit `mora.yaml` as a document, leaving every comment and every other connection
 where they were.
@@ -427,7 +425,35 @@ comments on it. `mora describe` prints them, searches them, and a served model
 hands them to whoever is asking — so a definition arrives with the caveats that
 make it safe to use.
 
-## Serve it with Publisher
+## `mora plugin`
+
+A plugin sets up one integration and nothing else. Everything a project does not
+need stays out of it, so a scaffold is the semantic layer and nothing more.
+
+```bash
+mora plugin list                    # what Mora offers, and what this project uses
+mora plugin add publisher           # set an integration up
+mora plugin remove publisher        # take it back out
+```
+
+Adding writes the files the integration needs, records the plugin in `mora.yaml`,
+and notes it in the managed block of `AGENTS.md`. Commit the result: the files
+belong to the project from that moment, and Mora will not rewrite them.
+
+Removing deletes only the files the plugin would write today. If one of them has
+been edited since, the command refuses and writes *nothing* — a failed remove
+never leaves a project half changed. Pass `--force` to delete them anyway, or
+`--keep-files` to keep the files and only stop tracking the plugin.
+
+Mora ships with `publisher`. Anything else is an npm package named
+`mora-plugin-<name>`, installed per checkout into the gitignored
+`.mora/plugins/`, which is why a fresh clone is told to run `mora plugin add`
+rather than having a package fetched behind its back. A plugin package
+default-exports `{ name, description, setup }`, where `setup` returns the files to
+write; the same function is what `remove` consults to learn what to delete, so
+there is no teardown to keep in sync.
+
+### Serve it with Publisher
 
 Mora is the authoring half of a semantic layer: it scaffolds the models, keeps
 them compiling, and puts every change to a definition through code review.
@@ -435,18 +461,21 @@ them compiling, and puts every change to a definition through code review.
 point it at a merged repo and it exposes the same models over REST and MCP, to
 BI tools, applications, and agents that never touch the checkout.
 
-`mora init` writes the two files Publisher needs, so a project is servable with
-no edits:
-
 ```bash
+mora plugin add publisher
 npx @malloy-publisher/server --server_root .
 ```
 
-Table paths in a scaffolded model are relative to `metrics/`, which is what both
-Mora and Publisher resolve from, so the same `.malloy` file works in the CLI, in
-the VS Code Malloy extension, and on a server. `publisher.config.json` is yours
-once written — add warehouse connections and environments to it freely; Mora
-scaffolds it and then leaves it alone.
+The plugin writes `metrics/publisher.json`, which makes the models directory a
+package, and `publisher.config.json`, which lists the packages a server should
+load. Table paths in a scaffolded model are relative to `metrics/`, which is what
+both Mora and Publisher resolve from, so the same `.malloy` file works in the CLI,
+in the VS Code Malloy extension, and on a server.
+
+Both files are yours once written — add warehouse connections and environments to
+`publisher.config.json` freely. A Publisher server keeps its own connection
+config, so a served project can read from a different warehouse than your laptop
+does.
 
 ## `mora upgrade`
 
@@ -472,6 +501,9 @@ files, nextSteps }`.
 - MCP over the development loop — `validate`, `describe` and `query` against a
   checkout, for agents that prefer tools to shell commands. Serving finished
   models over MCP is Publisher's job, and stays there.
+- More plugins, and third-party ones worth naming here. The interface is
+  deliberately small (`setup` returns files); it will grow only where a real
+  integration cannot be expressed.
 
 ## Development
 
@@ -494,11 +526,13 @@ node dist/cli.js describe -C /tmp/demo
 node dist/cli.js query monthly_revenue -C /tmp/demo
 ```
 
-To check that a scaffolded project is still servable, run Publisher against it
-and query the same definition through its API. The two should agree:
+To check that a scaffolded project is still servable, add the Publisher plugin,
+run Publisher against it, and query the same definition through its API. The two
+should agree:
 
 ```bash
-cd /tmp/demo && npx @malloy-publisher/server --server_root .
+cd /tmp/demo && node ../path/to/mora-cli/dist/cli.js plugin add publisher --json
+npx @malloy-publisher/server --server_root .
 curl -X POST -H 'Content-Type: application/json' -d '{"queryName":"monthly_revenue"}' \
   http://localhost:4000/api/v0/environments/default/packages/demo/models/example.malloy/query
 ```

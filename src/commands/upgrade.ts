@@ -6,6 +6,7 @@ import pc from 'picocolors';
 import { isDuckDbConnection, loadConfig, type MoraConfig } from '../config.js';
 import { ExitCode, MoraError } from '../errors.js';
 import { pendingMigrations, upgradeConfigFile } from '../migrate.js';
+import { pluginAgentsNotes } from '../plugins/registry.js';
 import {
   AGENT_DOCS_DIR,
   AGENTS_FILENAME,
@@ -201,7 +202,12 @@ async function refreshOwnedDocs(config: MoraConfig): Promise<WrittenFile[]> {
   );
 }
 
-async function refreshAgentsManagedBlock(config: MoraConfig): Promise<WrittenFile[]> {
+/**
+ * Rewrites the part of AGENTS.md Mora owns from the project as it now stands.
+ * Shared with `mora plugin`, so a plugin's layout note appears the moment it is
+ * added rather than at the next upgrade.
+ */
+export async function refreshAgentsManagedBlock(config: MoraConfig): Promise<WrittenFile[]> {
   const exampleModelPath = `${config.modelsDir}/${EXAMPLE_MODEL_FILENAME}`;
   const hasExample = existsSync(path.join(config.root, exampleModelPath));
   const agentsDoc = renderAgentsDoc({
@@ -211,6 +217,11 @@ async function refreshAgentsManagedBlock(config: MoraConfig): Promise<WrittenFil
     exampleModelPath,
     hasExample,
     agentDocsDir: AGENT_DOCS_DIR,
+    pluginNotes: pluginAgentsNotes(config.plugins, {
+      root: config.root,
+      projectName: config.projectName,
+      modelsDir: config.modelsDir,
+    }),
   });
 
   return writeScaffold(config.root, [

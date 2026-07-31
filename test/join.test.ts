@@ -115,6 +115,28 @@ describe('init in a project that already exists', () => {
     );
   });
 
+  it('reports a plugin the project uses but this checkout does not have', async () => {
+    const root = await committedProject();
+    const configPath = path.join(root, 'mora.yaml');
+    await writeFile(
+      configPath,
+      `${await readFile(configPath, 'utf8')}\nplugins:\n  - publisher\n  - name: forecast\n    package: mora-plugin-forecast\n`,
+      'utf8',
+    );
+
+    const report = await join(root);
+
+    // A built-in is always usable; a third-party package lives in the gitignored
+    // .mora/plugins/, so a fresh clone has to be told to install it.
+    expect(report.plugins).toEqual([
+      { name: 'publisher', installed: true },
+      { name: 'forecast', installed: false },
+    ]);
+    expect(report.nextSteps[0]).toContain('mora plugin add forecast');
+    // Missing plugins are worth saying, but they are not a broken checkout.
+    expect(report.ok).toBe(true);
+  });
+
   it('explains a compile failure caused by data that is not in the checkout', async () => {
     const root = await committedProject();
     await rm(path.join(root, 'metrics/data/orders.csv'));

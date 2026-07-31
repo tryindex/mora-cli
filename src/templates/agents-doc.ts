@@ -6,6 +6,8 @@ export interface AgentsDocOptions {
   hasExample: boolean;
   /** Where Mora keeps the docs it owns, e.g. `.agents`. */
   agentDocsDir: string;
+  /** Layout notes contributed by the plugins the project has added. */
+  pluginNotes?: string[];
 }
 
 export interface AgentsDoc {
@@ -42,7 +44,7 @@ who to ask before changing one that is already in use.
 `;
 
 function renderManaged(options: AgentsDocOptions): string {
-  const { modelsDir, dataDir, exampleModelPath, hasExample, agentDocsDir } = options;
+  const { modelsDir, dataDir, exampleModelPath, hasExample, agentDocsDir, pluginNotes } = options;
 
   const layout = [
     '- `mora.yaml` - project config: model directory and database connections.',
@@ -55,8 +57,7 @@ function renderManaged(options: AgentsDocOptions): string {
       : []),
     `- \`${agentDocsDir}/malloy.md\` - how to write Malloy in this project.`,
     `- \`${agentDocsDir}/mora.md\` - the \`mora\` commands, their flags and output.`,
-    `- \`${modelsDir}/publisher.json\` and \`publisher.config.json\` - let Malloy`,
-    '  Publisher serve these models. Not used by the `mora` commands.',
+    ...(pluginNotes ?? []),
   ].join('\n');
 
   return `Mora maintains this section, between its \`mora:begin\`/\`mora:end\` markers.
