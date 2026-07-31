@@ -224,6 +224,14 @@ The command records the variable in \`.env.example\` and reports it under
 the person running it can write. Adding a connection does not make it usable by a
 Publisher server, which keeps its own config.
 
+BigQuery uses Application Default Credentials when \`service_account_key_path\` is
+unset, so a \`test\` that fails on a keyless connection usually means
+\`gcloud auth application-default login\` has not been run for an account with
+access. Ask the person you are working with to run it; it needs a browser, so you
+cannot do it for them. Run without \`--project-id\`, a human is also shown a
+searchable list of the projects their credentials can query — which is why an
+unattended run must pass the project explicitly rather than expect a default.
+
 ## mora upgrade
 
 Brings this project up to date with the running Mora: refreshes \`.agents/\` and
@@ -241,6 +249,12 @@ A project stamped by a *newer* Mora refuses to run upgrade on an older CLI —
 update the binary first. A missing stamp is treated as pending.
 
 ## mora init
+
+Two modes. In a directory without \`mora.yaml\`, init scaffolds a new semantic
+layer. Pass \`--db\` and any required warehouse setting as a flag so it does not
+need to prompt; for BigQuery that is usually \`--project-id '\${GOOGLE_CLOUD_PROJECT}'\`.
+Init writes credential values into \`.env\` when you answer interactively, and
+tests the warehouse unless you pass \`--no-test\`.
 
 In a project that already has \`mora.yaml\`, this is a setup run: it creates a
 local \`.env\` from \`.env.example\`, reports which credentials are unset, notes

@@ -11,7 +11,8 @@ import { MANAGED_BEGIN, MANAGED_END } from '../src/scaffold.js';
 const PROJECT_VAR = 'GOOGLE_CLOUD_PROJECT';
 
 function flags(overrides: Partial<InitFlags> = {}): InitFlags {
-  return { example: true, compile: true, json: true, yes: true, ...overrides };
+  // --no-test: these fixtures are about join behaviour, not warehouse reachability.
+  return { example: true, compile: true, json: true, yes: true, test: false, ...overrides };
 }
 
 async function tempDir(prefix = 'mora-join-'): Promise<string> {
@@ -22,6 +23,8 @@ async function tempDir(prefix = 'mora-join-'): Promise<string> {
 async function committedProject(database = 'duckdb'): Promise<string> {
   const root = await tempDir();
   await runInit(root, flags({ db: database, name: 'retail', compile: false }));
+  // .env is gitignored; a clone does not have one until join creates it.
+  await rm(path.join(root, ENV_FILENAME), { force: true });
   return root;
 }
 
@@ -238,6 +241,104 @@ describe('committed artifacts', () => {
     expect(updated.startsWith('# Working with the retail semantic layer')).toBe(true);
     expect(updated).not.toContain('an older, unheaded body');
     expect(updated.split(MANAGED_BEGIN)).toHaveLength(2);
+  });
+});
+
+describe('init scaffolds a warehouse', () => {
+  it('writes flag settings into mora.yaml and reports unset credentials', async () => {
+    vi.stubEnv(PROJECT_VAR, undefined);
+    const root = await tempDir('mora-init-bq-');
+
+    const report = await runInit(
+      root,
+      flags({
+        db: 'bigquery',
+        name: 'retail',
+        compile: false,
+        projectId: 'acme-prod',
+        location: 'EU',
+      }),
+    );
+
+    expect(report.mode).toBe('scaffold');
+    if (report.mode !== 'scaffold') return;
+
+    const config = parseYaml(await readFile(path.join(root, 'mora.yaml'), 'utf8')) as {
+      connections: { warehouse: Record<string, string>; default: string };
+    };
+    expect(config.connections.default).toBe('warehouse');
+    expect(config.connections.warehouse).toMatchObject({
+      type: 'bigquery',
+      project_id: 'acme-prod',
+      location: 'EU',
+    });
+    // A literal project id needs no env var; optional credentials stay unset.
+    expect(report.missingEnvVars).toEqual([]);
+    expect(report.connection).toBeNull();
+    expect(report.files.some((file) => file.path === ENV_FILENAME)).toBe(false);
+  });
+
+  it('creates .env for env-var settings and leaves missingEnvVars when they are empty', async () => {
+    vi.stubEnv(PROJECT_VAR, undefined);
+    const root = await tempDir('mora-init-bq-env-');
+    const projectRef = `\u0024{${PROJECT_VAR}}`;
+
+    const report = await runInit(
+      root,
+      flags({
+        db: 'bigquery',
+        name: 'retail',
+        compile: false,
+        projectId: projectRef,
+      }),
+    );
+
+    expect(report.mode).toBe('scaffold');
+    if (report.mode !== 'scaffold') return;
+    expect(report.ok).toBe(false);
+    expect(report.missingEnvVars).toEqual([PROJECT_VAR]);
+    expect(report.files).toContainEqual({ path: ENV_FILENAME, action: 'created' });
+    expect(report.nextSteps.some((step) => step.includes(PROJECT_VAR))).toBe(true);
+  });
+
+  it('skips the warehouse test when credentials are already set and --no-test is passed', async () => {
+    vi.stubEnv(PROJECT_VAR, 'acme-from-shell');
+    const root = await tempDir('mora-init-bq-skip-');
+
+    const report = await runInit(
+      root,
+      flags({ db: 'bigquery', name: 'retail', compile: false, test: false }),
+    );
+
+    expect(report.mode).toBe('scaffold');
+    if (report.mode !== 'scaffold') return;
+    expect(report.missingEnvVars).toEqual([]);
+    expect(report.connection).toBeNull();
+    expect(report.ok).toBe(true);
+  });
+});
+
+const bigqueryProject = process.env.GOOGLE_CLOUD_PROJECT;
+describe.skipIf(!bigqueryProject)('init against a real BigQuery project', () => {
+  it('leaves the warehouse connection reachable', async () => {
+    const root = await tempDir('mora-init-bq-live-');
+
+    const report = await runInit(root, {
+      example: true,
+      compile: false,
+      json: true,
+      yes: true,
+      db: 'bigquery',
+      name: 'retail',
+      projectId: bigqueryProject,
+      test: true,
+    });
+
+    expect(report.mode).toBe('scaffold');
+    if (report.mode !== 'scaffold') return;
+    expect(report.missingEnvVars).toEqual([]);
+    expect(report.connection).toMatchObject({ name: 'warehouse', ok: true });
+    expect(report.ok).toBe(true);
   });
 });
 

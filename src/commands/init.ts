@@ -5,13 +5,21 @@ import * as prompts from '@clack/prompts';
 import type { Command } from 'commander';
 import pc from 'picocolors';
 import { loadConfig, type MoraConfig } from '../config.js';
-import { DATABASE_IDS, DATABASES, type DatabaseId, isDatabaseId } from '../databases.js';
+import {
+  connectionSettings,
+  DATABASE_IDS,
+  DATABASES,
+  type DatabaseId,
+  defaultWarehouseSettings,
+  isDatabaseId,
+} from '../databases.js';
 import {
   describeEnvironment,
   ENV_EXAMPLE_FILENAME,
   ENV_FILENAME,
   type EnvironmentReport,
   readEnvFile,
+  writeEnvValues,
 } from '../env.js';
 import { ExitCode, MoraError } from '../errors.js';
 import { type CompileResult, compileModel } from '../malloy/compile.js';
@@ -24,11 +32,20 @@ import {
   normalizeRelative,
   resolvePaths,
   type ScaffoldSpec,
+  WAREHOUSE_CONNECTION_NAME,
   type WrittenFile,
   writeScaffold,
 } from '../scaffold.js';
 import { renderEnvFile } from '../templates/env.js';
 import { CLI_VERSION, PACKAGE_NAME } from '../version.js';
+import {
+  type ConnectionTestResult,
+  checkConnection,
+  chooseSettings,
+  flagValue,
+  gcloudAuthStep,
+  type SettingFlags,
+} from './connection.js';
 import { assessUpgrade, type UpgradeStatus } from './upgrade.js';
 import { count, type ProjectValidation, printModelResults, validateProject } from './validate.js';
 
@@ -36,7 +53,10 @@ const DEFAULT_MODELS_DIR = 'metrics';
 const FALLBACK_PROJECT_NAME = 'analytics';
 const PROJECT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/;
 
-export interface InitFlags {
+/** Warehouse databases whose settings init can collect up front. */
+const WAREHOUSE_IDS = DATABASE_IDS.filter((id) => id !== 'duckdb');
+
+export interface InitFlags extends SettingFlags {
   name?: string;
   db?: string;
   models?: string;
@@ -45,6 +65,8 @@ export interface InitFlags {
   force?: boolean;
   json?: boolean;
   compile: boolean;
+  /** Connectivity check for the chosen warehouse; defaults to true. */
+  test?: boolean;
 }
 
 export interface ScaffoldReport {
@@ -60,6 +82,10 @@ export interface ScaffoldReport {
   };
   files: WrittenFile[];
   compile: CompileResult;
+  /** Variables the warehouse connection needs that are not set yet. */
+  missingEnvVars: string[];
+  /** The warehouse connectivity check, or null when it was not run. */
+  connection: ConnectionTestResult | null;
   nextSteps: string[];
 }
 
@@ -91,7 +117,7 @@ export interface JoinReport extends ProjectValidation {
 export type InitReport = ScaffoldReport | JoinReport;
 
 export function registerInitCommand(program: Command): void {
-  program
+  const command = program
     .command('init')
     .description('Scaffold a Malloy semantic layer in a project')
     .argument('[directory]', 'directory to initialize', '.')
@@ -102,7 +128,20 @@ export function registerInitCommand(program: Command): void {
     .option('-y, --yes', 'accept defaults without prompting')
     .option('-f, --force', 'overwrite existing files')
     .option('--no-compile', 'skip the Malloy compile check')
-    .option('--json', 'print a machine-readable result instead of prose')
+    .option('--no-test', 'skip the warehouse connectivity check')
+    .option('--json', 'print a machine-readable result instead of prose');
+
+  // One flag per warehouse setting so init can finish setup unattended. DuckDB's
+  // settings are fixed by the scaffold, so only credentialed databases appear.
+  for (const id of WAREHOUSE_IDS) {
+    for (const setting of connectionSettings(id, { modelsDir: '<models>' })) {
+      if (!command.options.some((option) => option.long === `--${setting.flag}`)) {
+        command.option(`--${setting.flag} <value>`, `${DATABASES[id].label}: ${setting.label}`);
+      }
+    }
+  }
+
+  command
     .addHelpText(
       'after',
       `
@@ -114,6 +153,10 @@ Two modes:
   committed models. Nothing the team owns is changed. That is what a teammate runs
   after cloning. Pass --force to scaffold over an existing project.
 
+  Choosing a warehouse interactively prompts for its settings, writes credential
+  values into ${ENV_FILENAME}, and tests the connection so you leave ready to query.
+  Pass the same settings as flags (e.g. --project-id) to do that unattended.
+
 Agent usage:
   Pass --yes (or --json) to run without prompts. Exit codes: ${ExitCode.ok} success,
   ${ExitCode.failure} failure, ${ExitCode.usage} bad usage, ${ExitCode.conflict} refused because files already exist.
@@ -121,6 +164,7 @@ Agent usage:
 Examples:
   $ mora init
   $ mora init ./analytics --db duckdb --yes
+  $ mora init --db bigquery --project-id '\${GOOGLE_CLOUD_PROJECT}' --yes
   $ mora init --name retail --models models --json`,
     )
     .action(async (directory: string, flags: InitFlags) => {
@@ -176,8 +220,27 @@ async function runScaffold(
   const paths = resolvePaths(spec);
   const compile = await runCompileCheck({ spec, root, interactive, flags });
 
+  const envSetup = await setupWarehouseCredentials({
+    root,
+    spec,
+    interactive,
+    projectName: spec.projectName,
+  });
+  if (envSetup.file) written.push(envSetup.file);
+
+  const connection = await maybeTestWarehouse({
+    root,
+    spec,
+    flags,
+    missingEnvVars: envSetup.missingEnvVars,
+    prose: interactive,
+  });
+
   const report: ScaffoldReport = {
-    ok: compile.status !== 'failed',
+    ok:
+      compile.status !== 'failed' &&
+      envSetup.missingEnvVars.length === 0 &&
+      (connection === null || connection.ok),
     command: 'init',
     mode: 'scaffold',
     root,
@@ -189,7 +252,9 @@ async function runScaffold(
     },
     files: written,
     compile,
-    nextSteps: nextSteps(spec, paths.exampleModelPath),
+    missingEnvVars: envSetup.missingEnvVars,
+    connection,
+    nextSteps: nextSteps(spec, paths.exampleModelPath, envSetup.missingEnvVars, connection),
   };
 
   if (interactive) {
@@ -197,6 +262,102 @@ async function runScaffold(
   }
 
   return report;
+}
+
+/**
+ * Ensures a checkout that needs credentials has a `.env`, and interactively
+ * fills in any `${VAR}` the warehouse still cannot resolve. Non-interactive
+ * runs leave values unset so an agent can write them itself.
+ */
+async function setupWarehouseCredentials(context: {
+  root: string;
+  spec: ScaffoldSpec;
+  interactive: boolean;
+  projectName: string;
+}): Promise<{ file?: WrittenFile; missingEnvVars: string[] }> {
+  const { root, spec, interactive, projectName } = context;
+  if (!DATABASES[spec.database].needsCredentials) {
+    return { missingEnvVars: [] };
+  }
+
+  const config = await loadConfig(root);
+  const envPath = path.join(root, ENV_FILENAME);
+  let file: WrittenFile | undefined;
+
+  if (config.requiredEnvVars.length > 0 && !existsSync(envPath)) {
+    const example = path.join(root, ENV_EXAMPLE_FILENAME);
+    if (existsSync(example)) {
+      await copyFile(example, envPath);
+    } else {
+      await writeFile(
+        envPath,
+        renderEnvFile({ projectName, variables: config.requiredEnvVars }),
+        'utf8',
+      );
+    }
+    file = { path: ENV_FILENAME, action: 'created' };
+  }
+
+  let envFile = await readEnvFile(envPath);
+  let missing = describeEnvironment(config.requiredEnvVars, envFile).missing;
+
+  if (interactive && missing.length > 0) {
+    const collected = await promptEnvValues(missing);
+    if (Object.keys(collected).length > 0) {
+      const action = await writeEnvValues(envPath, collected, {
+        header: `# Local credentials for the ${projectName} semantic layer.\n#\n# This file is gitignored. Fill in the values below, then run \`mora validate\`.`,
+      });
+      file = { path: ENV_FILENAME, action: file ? 'created' : action };
+      envFile = await readEnvFile(envPath);
+      missing = describeEnvironment(config.requiredEnvVars, envFile).missing;
+    }
+  }
+
+  return { file, missingEnvVars: missing };
+}
+
+async function promptEnvValues(names: string[]): Promise<Record<string, string>> {
+  const values: Record<string, string> = {};
+  prompts.log.info(
+    `These go in ${ENV_FILENAME}, which is gitignored. Leave a value empty to skip it.`,
+  );
+  for (const name of names) {
+    const answer = await ask(
+      prompts.text({
+        message: name,
+        placeholder: 'leave empty to skip',
+      }),
+    );
+    if (answer.trim()) values[name] = answer.trim();
+  }
+  return values;
+}
+
+async function maybeTestWarehouse(context: {
+  root: string;
+  spec: ScaffoldSpec;
+  flags: InitFlags;
+  missingEnvVars: string[];
+  prose: boolean;
+}): Promise<ConnectionTestResult | null> {
+  const { root, spec, flags, missingEnvVars, prose } = context;
+  if (flags.test === false || !DATABASES[spec.database].needsCredentials) return null;
+  if (missingEnvVars.length > 0) return null;
+
+  const config = await loadConfig(root);
+  const connection = config.connections.find(
+    (entry) => entry.name === WAREHOUSE_CONNECTION_NAME && entry.supported,
+  );
+  if (!connection?.supported) return null;
+
+  const spinner = prose && process.stdout.isTTY ? prompts.spinner() : undefined;
+  spinner?.start(`Testing ${connection.name}`);
+  const result = await checkConnection(connection, root);
+  if (spinner) {
+    if (result.ok) spinner.stop(`${connection.name} answered`);
+    else spinner.error(`${connection.name} did not answer`);
+  }
+  return result;
 }
 
 /**
@@ -451,13 +612,30 @@ function isInteractive(flags: InitFlags): boolean {
 }
 
 function specFromFlags(root: string, flags: InitFlags): ScaffoldSpec {
+  const database = parseDatabase(flags.db) ?? 'duckdb';
+  const modelsDir = validateModelsDir(flags.models ?? DEFAULT_MODELS_DIR);
   return {
     root,
     projectName: validateProjectName(flags.name ?? defaultProjectName(root)),
-    database: parseDatabase(flags.db) ?? 'duckdb',
-    modelsDir: validateModelsDir(flags.models ?? DEFAULT_MODELS_DIR),
+    database,
+    modelsDir,
     includeExample: flags.example,
+    warehouseSettings:
+      database === 'duckdb' ? undefined : warehouseSettingsFromFlags(database, modelsDir, flags),
   };
+}
+
+function warehouseSettingsFromFlags(
+  database: Exclude<DatabaseId, 'duckdb'>,
+  modelsDir: string,
+  flags: SettingFlags,
+): Record<string, string> {
+  const settings = defaultWarehouseSettings(database, modelsDir);
+  for (const setting of connectionSettings(database, { modelsDir })) {
+    const fromFlag = flagValue(flags, setting);
+    if (fromFlag !== undefined) settings[setting.key] = fromFlag;
+  }
+  return settings;
 }
 
 async function promptForSpec(root: string, flags: InitFlags): Promise<ScaffoldSpec> {
@@ -489,6 +667,20 @@ async function promptForSpec(root: string, flags: InitFlags): Promise<ScaffoldSp
       }),
     ));
 
+  // Not asked for: every Mora project keeping its models in the same place is
+  // worth more than the choice. `--models` is there for a repo that needs a
+  // different one.
+  const modelsDir = validateModelsDir(flags.models ?? DEFAULT_MODELS_DIR);
+
+  let warehouseSettings: Record<string, string> | undefined;
+  if (DATABASES[database].needsCredentials && database !== 'duckdb') {
+    prompts.log.info(
+      `The example model stays on DuckDB so you have something that works right away.\n` +
+        `${DATABASES[database].label} settings go into ${CONFIG_FILENAME}; secrets belong in ${ENV_FILENAME}.`,
+    );
+    warehouseSettings = await chooseSettings(database, { modelsDir }, flags, true);
+  }
+
   const includeExample = flags.example
     ? await ask(
         prompts.confirm({
@@ -498,23 +690,13 @@ async function promptForSpec(root: string, flags: InitFlags): Promise<ScaffoldSp
       )
     : false;
 
-  if (DATABASES[database].needsCredentials) {
-    prompts.log.info(
-      `${DATABASES[database].label} needs credentials. Mora writes a ${CONFIG_FILENAME} block for\n` +
-        'it with placeholder values; fill those in before running queries. The example\n' +
-        'model stays on DuckDB so you have something that works right away.',
-    );
-  }
-
   return {
     root,
     projectName: validateProjectName(projectName),
     database,
-    // Not asked for: every Mora project keeping its models in the same place is
-    // worth more than the choice. `--models` is there for a repo that needs a
-    // different one.
-    modelsDir: validateModelsDir(flags.models ?? DEFAULT_MODELS_DIR),
+    modelsDir,
     includeExample,
+    warehouseSettings,
   };
 }
 
@@ -574,15 +756,29 @@ function defaultProjectName(root: string): string {
   return PROJECT_NAME_PATTERN.test(base) ? base : FALLBACK_PROJECT_NAME;
 }
 
-function nextSteps(spec: ScaffoldSpec, exampleModelPath: string): string[] {
+function nextSteps(
+  spec: ScaffoldSpec,
+  exampleModelPath: string,
+  missingEnvVars: string[],
+  connection: ConnectionTestResult | null,
+): string[] {
   const steps: string[] = [];
   if (spec.includeExample) {
     steps.push(`Read ${exampleModelPath} to see how sources, measures and views fit together.`);
     steps.push('Run `mora describe` to list the vocabulary, then `mora query monthly_revenue`.');
   }
-  if (DATABASES[spec.database].needsCredentials) {
+  if (missingEnvVars.length > 0) {
     steps.push(
-      `Fill in the ${spec.database} connection in ${CONFIG_FILENAME} and set the referenced environment variables.`,
+      `Set ${missingEnvVars.join(', ')} in ${ENV_FILENAME}, then run \`mora connection test ${WAREHOUSE_CONNECTION_NAME}\`.`,
+    );
+  } else if (connection && !connection.ok) {
+    steps.push(
+      `Fix the ${spec.database} connection settings or your credentials, then run \`mora connection test ${WAREHOUSE_CONNECTION_NAME}\`.`,
+    );
+    steps.push(...gcloudAuthStep(spec.database, spec.warehouseSettings ?? {}));
+  } else if (DATABASES[spec.database].needsCredentials && connection?.ok) {
+    steps.push(
+      `Add a source over your warehouse tables: \`source: my_table is ${WAREHOUSE_CONNECTION_NAME}.table('dataset.my_table')\`.`,
     );
   }
   steps.push(
@@ -615,13 +811,39 @@ function reportInteractive(report: ScaffoldReport, directory: string): void {
     prompts.log.warn(`Compile check skipped: ${report.compile.reason}`);
   }
 
+  if (report.missingEnvVars.length > 0) {
+    prompts.log.warn(
+      `${report.missingEnvVars.join(', ')} ${
+        report.missingEnvVars.length === 1 ? 'is' : 'are'
+      } not set.`,
+    );
+  }
+  if (report.connection && !report.connection.ok) {
+    prompts.log.error(`${report.connection.name}\n${report.connection.error ?? 'unknown error'}`);
+  }
+
   prompts.note(report.nextSteps.map((step, i) => `${i + 1}. ${step}`).join('\n'), 'Next');
 
   const location = directory === '.' ? 'this directory' : directory;
+  if (report.ok) {
+    const warehouse =
+      report.connection?.ok === true ? ` ${pc.cyan(report.connection.name)} is reachable.` : '';
+    prompts.outro(`Semantic layer ready in ${pc.cyan(location)}.${warehouse}`);
+    return;
+  }
+
+  const reasons: string[] = [];
+  if (report.compile.status === 'failed') reasons.push('the example failed to compile');
+  if (report.missingEnvVars.length > 0) {
+    reasons.push(`${count(report.missingEnvVars.length, 'credential')} still to set`);
+  }
+  if (report.connection && !report.connection.ok) {
+    reasons.push(`${report.connection.name} is not reachable yet`);
+  }
   prompts.outro(
-    report.ok
-      ? `Semantic layer ready in ${pc.cyan(location)}.`
-      : pc.yellow(`Scaffold written to ${location}, but the compile check failed.`),
+    pc.yellow(
+      `Scaffold written to ${location}${reasons.length > 0 ? `, but ${reasons.join(' and ')}` : ''}.`,
+    ),
   );
 }
 

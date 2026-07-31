@@ -20,13 +20,25 @@ import {
   DATABASES,
   type DatabaseId,
   isDatabaseId,
+  type SettingsContext,
+  suggestSetting,
 } from '../databases.js';
 import { describeEnvironment, ENV_FILENAME, readEnvFile } from '../env.js';
 import { ExitCode, MoraError } from '../errors.js';
+import {
+  ADC_LOGIN_COMMAND,
+  detectGcloud,
+  type GcloudState,
+  listBigQueryProjects,
+} from '../gcloud.js';
 import { describeError, testConnection } from '../malloy/runtime.js';
 import { CONFIG_FILENAME } from '../scaffold.js';
+import { count } from './validate.js';
 
-interface AddFlags extends Record<string, unknown> {
+/** Flags that can supply a connection setting, camel-cased the way Commander does. */
+export type SettingFlags = Record<string, unknown>;
+
+interface AddFlags extends SettingFlags {
   directory: string;
   type?: string;
   default?: boolean;
@@ -364,14 +376,14 @@ export async function runConnectionAdd(
 
   const type = await chooseType(flags.type, interactive);
   const connectionName = await chooseName(name, type, config, interactive);
-  const settings = await chooseSettings(type, config, flags, interactive);
+  const settings = await chooseSettings(type, { modelsDir: config.modelsDir }, flags, interactive);
   const makeDefault = await chooseDefault(flags.default, config, interactive);
 
   const { contents } = await addConnection(config, {
     name: connectionName,
     type,
     settings,
-    comments: comments(type, config),
+    comments: settingComments(type, { modelsDir: config.modelsDir }),
     makeDefault,
   });
   const envExample = await syncEnvExample(config.root, config.projectName, contents);
@@ -396,7 +408,7 @@ export async function runConnectionAdd(
     envExample,
     missingEnvVars,
     test,
-    nextSteps: addNextSteps({ connectionName, type, missingEnvVars, test }),
+    nextSteps: addNextSteps({ connectionName, type, settings, missingEnvVars, test }),
   };
 
   if (prose) {
@@ -507,22 +519,40 @@ function uniqueName(type: DatabaseId, config: MoraConfig): string {
   }
 }
 
-async function chooseSettings(
+/**
+ * Collects the settings a connection needs. Shared by `mora connection add` and
+ * `mora init` so the prompts, flags and written YAML cannot drift between them.
+ */
+export async function chooseSettings(
   type: DatabaseId,
-  config: MoraConfig,
-  flags: Partial<AddFlags>,
+  context: SettingsContext,
+  flags: SettingFlags,
   interactive: boolean,
 ): Promise<Record<string, string>> {
   const settings: Record<string, string> = {};
+  const google =
+    type === 'bigquery' && interactive
+      ? await offerGcloudCredentials(flags, interactive)
+      : undefined;
 
-  for (const setting of connectionSettings(type, { modelsDir: config.modelsDir })) {
+  for (const setting of connectionSettings(type, context)) {
     const fromFlag = flagValue(flags, setting);
     if (fromFlag !== undefined) {
       settings[setting.key] = fromFlag;
       continue;
     }
 
-    const suggested = suggest(setting);
+    // Answered already by accepting the detected gcloud credentials, so asking
+    // again would be asking the same question twice.
+    if (google?.skip.has(setting.key)) continue;
+
+    const chosen = google?.resolved[setting.key];
+    if (chosen !== undefined) {
+      settings[setting.key] = chosen;
+      continue;
+    }
+
+    const suggested = google?.suggestions[setting.key] ?? suggestSetting(setting);
     if (!interactive) {
       if (suggested !== undefined) settings[setting.key] = suggested;
       else if (setting.required) {
@@ -537,7 +567,7 @@ async function chooseSettings(
 
     const answer = unlessCancelled(
       await prompts.text({
-        message: setting.required ? setting.label : `${setting.label} ${pc.dim('(optional)')}`,
+        message: settingMessage(setting, google?.hints[setting.key]),
         // Plain text only: the prompt dims the placeholder itself, and it splits
         // off the first character to draw a cursor, which mangles an ANSI escape.
         placeholder: suggested ?? setting.placeholder ?? 'leave empty to skip',
@@ -556,27 +586,168 @@ async function chooseSettings(
   return settings;
 }
 
-/**
- * What to write when nobody says otherwise. A setting with a conventional
- * environment variable is offered as a `${VAR}` reference, because mora.yaml is
- * committed and a credential written into it is a credential leaked.
- */
-function suggest(setting: ConnectionSetting): string | undefined {
-  if (setting.defaultValue !== undefined) return setting.defaultValue;
-  if (setting.envVar && setting.required) return `\${${setting.envVar}}`;
-  return undefined;
+function settingMessage(setting: ConnectionSetting, hint: string | undefined): string {
+  const label = setting.required ? setting.label : `${setting.label} ${pc.dim('(optional)')}`;
+  return hint ? `${label} ${pc.dim(`(${hint})`)}` : label;
 }
 
-function flagValue(flags: Partial<AddFlags>, setting: ConnectionSetting): string | undefined {
+interface GcloudOffer {
+  /** Settings the accepted gcloud credentials already answer. */
+  skip: Set<string>;
+  /** Settings the reader has already chosen a value for, so nothing is asked. */
+  resolved: Record<string, string>;
+  /** Values to offer instead of the registry's own suggestion. */
+  suggestions: Record<string, string>;
+  /** Where an offered value came from, shown beside the prompt. */
+  hints: Record<string, string>;
+}
+
+/**
+ * Chosen from the picker to mean "let me type one instead". A colon cannot
+ * appear in a GCP project id, so this can never collide with a real one.
+ */
+const ENTER_MANUALLY = 'mora:enter-by-hand';
+
+/**
+ * Uses whatever `gcloud` is already signed in as. The Google client libraries
+ * fall back to Application Default Credentials whenever no key file is set, so
+ * accepting this writes nothing extra — it only stops Mora asking for a key file
+ * the reader does not need, and lets gcloud answer "which project".
+ */
+async function offerGcloudCredentials(
+  flags: SettingFlags,
+  interactive: boolean,
+): Promise<GcloudOffer> {
+  const offer: GcloudOffer = { skip: new Set(), resolved: {}, suggestions: {}, hints: {} };
+  // Only ever a prompt default. An unattended run must write the same mora.yaml
+  // on every machine, so what this one happens to be signed in as cannot decide
+  // what lands in a committed file.
+  if (!interactive) return offer;
+
+  const state = await detectGcloud();
+
+  if (state.project) {
+    offer.suggestions.project_id = state.project;
+    offer.hints.project_id = 'from gcloud';
+  }
+
+  // An explicit key file is a decision already made, and it wins over ADC in the
+  // client libraries too.
+  const keySetting = connectionSettings('bigquery', { modelsDir: '' }).find(
+    (setting) => setting.key === 'service_account_key_path',
+  );
+  if (keySetting && flagValue(flags, keySetting) !== undefined) return offer;
+
+  if (state.adc === null) {
+    prompts.log.warn(
+      `No Google credentials found. Run \`${ADC_LOGIN_COMMAND}\`, or give a service\n` +
+        'account key file below.',
+    );
+    return offer;
+  }
+
+  const who = state.account ?? (state.adc === 'environment' ? 'from your environment' : 'on disk');
+  const useAdc = unlessCancelled(
+    await prompts.confirm({
+      message: `Use the Google credentials you are already signed in with (${who})?`,
+      initialValue: true,
+    }),
+  );
+
+  if (!useAdc) {
+    prompts.log.info(
+      `Then give a service account key file below, or run \`${ADC_LOGIN_COMMAND}\`\n` +
+        'as the account you want to use.',
+    );
+    return offer;
+  }
+
+  offer.skip.add('service_account_key_path');
+
+  // The project id was going to be typed from memory; these credentials can say
+  // which projects actually exist, so ask the API instead of the reader.
+  const projectSetting = connectionSettings('bigquery', { modelsDir: '' }).find(
+    (setting) => setting.key === 'project_id',
+  );
+  if (projectSetting && flagValue(flags, projectSetting) === undefined) {
+    const picked = await pickProject(state);
+    if (picked !== undefined) offer.resolved.project_id = picked;
+  }
+
+  return offer;
+}
+
+/**
+ * Offers the projects these credentials can run BigQuery in. Returns undefined
+ * when there is nothing to offer or the reader would rather type one, in which
+ * case the ordinary prompt runs and `${VAR}` stays available.
+ */
+async function pickProject(state: GcloudState): Promise<string | undefined> {
+  const spinner = process.stdout.isTTY ? prompts.spinner() : undefined;
+  spinner?.start('Finding the projects you can query');
+  const { projects, truncated } = await listBigQueryProjects(state);
+
+  if (projects.length === 0) {
+    spinner?.error('No projects to list, so type one below');
+    return undefined;
+  }
+  spinner?.stop(`Found ${count(projects.length, 'project')}`);
+  if (truncated) {
+    prompts.log.warn(
+      'That is only the first page of your projects. If the one you want is not\n' +
+        'listed, choose to enter it by hand.',
+    );
+  }
+
+  const options = projects.map((project) => ({
+    value: project.id,
+    label: project.name ?? project.id,
+    hint: project.name ? project.id : undefined,
+  }));
+  options.push({ value: ENTER_MANUALLY, label: 'Enter a project id by hand', hint: undefined });
+
+  const picked = unlessCancelled(
+    await prompts.autocomplete<string>({
+      message: 'Which project should the models read?',
+      options,
+      // The project gcloud is configured with is the likeliest answer, so it
+      // stays one keypress away even in a list of hundreds.
+      initialValue: projects.some((project) => project.id === state.project)
+        ? state.project
+        : undefined,
+      placeholder: 'Type to search by name or id',
+      maxItems: 10,
+      filter: (search, option) => matchesProject(search, option.value, option.label),
+    }),
+  );
+
+  return picked === ENTER_MANUALLY ? undefined : picked;
+}
+
+/** Searches what the reader can see: the display name and the id itself. */
+export function matchesProject(search: string, value: string, label?: string): boolean {
+  const needle = search.trim().toLowerCase();
+  if (needle.length === 0) return true;
+  // Kept reachable while filtering: a reader whose project is missing from the
+  // list is exactly the one who searched and found nothing.
+  if (value === ENTER_MANUALLY) return true;
+  return value.toLowerCase().includes(needle) || (label ?? '').toLowerCase().includes(needle);
+}
+
+export function flagValue(flags: SettingFlags, setting: ConnectionSetting): string | undefined {
   // Commander camel-cases long flags: --project-id lands on `projectId`.
   const key = setting.flag.replace(/-([a-z])/g, (_match, letter: string) => letter.toUpperCase());
   const value = flags[key];
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function comments(type: DatabaseId, config: MoraConfig): Record<string, string> {
+/** Registry comments for settings that end up in mora.yaml. */
+export function settingComments(
+  type: DatabaseId,
+  context: SettingsContext,
+): Record<string, string> {
   const notes: Record<string, string> = {};
-  for (const setting of connectionSettings(type, { modelsDir: config.modelsDir })) {
+  for (const setting of connectionSettings(type, context)) {
     if (setting.comment) notes[setting.key] = setting.comment;
   }
   return notes;
@@ -603,10 +774,11 @@ async function chooseDefault(
 function addNextSteps(context: {
   connectionName: string;
   type: DatabaseId;
+  settings: Record<string, string>;
   missingEnvVars: string[];
   test: ConnectionTestResult | null;
 }): string[] {
-  const { connectionName, missingEnvVars, test } = context;
+  const { connectionName, missingEnvVars, settings, test, type } = context;
   const steps: string[] = [];
 
   if (missingEnvVars.length > 0) {
@@ -617,6 +789,7 @@ function addNextSteps(context: {
     steps.push(
       `Fix the connection settings or your credentials, then run \`mora connection test ${connectionName}\`.`,
     );
+    steps.push(...gcloudAuthStep(type, settings));
   } else {
     steps.push(
       `Add a source to a model: \`source: my_table is ${connectionName}.table('dataset.my_table')\`.`,
@@ -628,6 +801,18 @@ function addNextSteps(context: {
     'A Publisher server needs this connection in its own config; Mora does not edit publisher.config.json.',
   );
   return steps;
+}
+
+/**
+ * A BigQuery connection with no key file authenticates as whoever gcloud last
+ * signed in, so an unreachable one is usually stale or wrong-account credentials
+ * rather than a mistake in mora.yaml.
+ */
+export function gcloudAuthStep(type: DatabaseId, settings: Record<string, string>): string[] {
+  if (type !== 'bigquery' || settings.service_account_key_path) return [];
+  return [
+    `These credentials come from gcloud. Check \`${ADC_LOGIN_COMMAND}\` has been run for the account with access to this project.`,
+  ];
 }
 
 function reportAdd(report: ConnectionAddReport): void {

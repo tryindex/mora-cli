@@ -103,6 +103,42 @@ describe('generated mora.yaml', () => {
     // DuckDB stays available so the project always has one usable connection.
     expect(parsed.connections.duckdb?.type).toBe('duckdb');
   });
+
+  it('defaults BigQuery to an env-var project id so credentials stay out of mora.yaml', () => {
+    const projectRef = '\u0024{GOOGLE_CLOUD_PROJECT}';
+    const parsed = config({ database: 'bigquery' });
+    expect(parsed.connections.warehouse).toMatchObject({
+      type: 'bigquery',
+      project_id: projectRef,
+    });
+    expect(parsed.connections.warehouse?.location).toBeUndefined();
+    expect(parsed.connections.warehouse?.service_account_key_path).toBeUndefined();
+  });
+
+  it('writes the warehouse settings collected during init', () => {
+    const keyRef = '\u0024{GOOGLE_APPLICATION_CREDENTIALS}';
+    const file = buildScaffold(
+      spec({
+        database: 'bigquery',
+        warehouseSettings: {
+          project_id: 'acme-prod',
+          location: 'EU',
+          service_account_key_path: keyRef,
+        },
+      }),
+    ).find((f) => f.path === CONFIG_FILENAME);
+
+    const parsed = parseYaml(file?.contents ?? '') as ParsedConfig;
+    expect(parsed.connections.warehouse).toEqual({
+      type: 'bigquery',
+      project_id: 'acme-prod',
+      location: 'EU',
+      service_account_key_path: keyRef,
+    });
+    // Optional settings that were skipped stay as commented hints.
+    expect(file?.contents).toContain('# billing_project_id:');
+    expect(file?.contents).toContain('The project whose tables the models read.');
+  });
 });
 
 describe('generated Publisher files', () => {

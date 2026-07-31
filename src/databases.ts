@@ -124,3 +124,27 @@ export function connectionSettings(id: DatabaseId, context: SettingsContext): Co
       ];
   }
 }
+
+/**
+ * What to write when nobody says otherwise. A setting with a conventional
+ * environment variable is offered as a `${VAR}` reference, because mora.yaml is
+ * committed and a credential written into it is a credential leaked.
+ */
+export function suggestSetting(setting: ConnectionSetting): string | undefined {
+  if (setting.defaultValue !== undefined) return setting.defaultValue;
+  if (setting.envVar && setting.required) return `\${${setting.envVar}}`;
+  return undefined;
+}
+
+/** Suggested settings for a warehouse when nobody has answered yet. */
+export function defaultWarehouseSettings(
+  id: Exclude<DatabaseId, 'duckdb'>,
+  modelsDir: string,
+): Record<string, string> {
+  const settings: Record<string, string> = {};
+  for (const setting of connectionSettings(id, { modelsDir })) {
+    const suggested = suggestSetting(setting);
+    if (suggested !== undefined) settings[setting.key] = suggested;
+  }
+  return settings;
+}

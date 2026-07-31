@@ -1,4 +1,9 @@
-import type { DatabaseId } from '../databases.js';
+import {
+  connectionSettings,
+  DATABASES,
+  type DatabaseId,
+  type SettingsContext,
+} from '../databases.js';
 
 export interface MoraConfigOptions {
   projectName: string;
@@ -6,21 +11,14 @@ export interface MoraConfigOptions {
   database: DatabaseId;
   duckdbConnectionName: string;
   warehouseConnectionName: string;
+  /**
+   * Settings for the chosen warehouse, as they should appear in mora.yaml
+   * (`${VAR}` references included). Ignored when the database is DuckDB.
+   */
+  warehouseSettings?: Record<string, string>;
   /** Running Mora version, written as `cli_version` so upgrades can detect drift. */
   cliVersion: string;
 }
-
-const WAREHOUSE_BLOCKS: Record<Exclude<DatabaseId, 'duckdb'>, (name: string) => string> = {
-  bigquery: (name) => `${name}:
-  type: bigquery
-  project_id: \${GOOGLE_CLOUD_PROJECT}
-  # Set this when the data lives outside the multi-region default.
-  # location: US
-  # Credentials come from Application Default Credentials
-  # (\`gcloud auth application-default login\`). To use a service account
-  # instead, point this at its key file:
-  # service_account_key_path: \${GOOGLE_APPLICATION_CREDENTIALS}`,
-};
 
 function indent(text: string, spaces: number): string {
   const pad = ' '.repeat(spaces);
@@ -28,6 +26,46 @@ function indent(text: string, spaces: number): string {
     .split('\n')
     .map((line) => (line.length > 0 ? pad + line : line))
     .join('\n');
+}
+
+/**
+ * Renders a warehouse connection block from the settings the caller collected
+ * and the registry's per-setting comments. Optional settings the caller skipped
+ * stay as commented hints, so a teammate still sees what can be filled in later.
+ */
+export function renderWarehouseBlock(
+  type: Exclude<DatabaseId, 'duckdb'>,
+  name: string,
+  settings: Record<string, string>,
+  context: SettingsContext,
+): string {
+  const lines: string[] = [`${name}:`, `  type: ${type}`];
+
+  for (const setting of connectionSettings(type, context)) {
+    const value = settings[setting.key];
+    if (value !== undefined) {
+      if (setting.comment) lines.push(`  # ${setting.comment}`);
+      lines.push(`  ${setting.key}: ${yamlScalar(value)}`);
+      continue;
+    }
+
+    if (!setting.required) {
+      if (setting.comment) lines.push(`  # ${setting.comment}`);
+      const hint = setting.placeholder ?? (setting.envVar ? `\${${setting.envVar}}` : undefined);
+      lines.push(hint !== undefined ? `  # ${setting.key}: ${hint}` : `  # ${setting.key}:`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/** Quote only when YAML would otherwise misread the value. */
+function yamlScalar(value: string): string {
+  if (value.length === 0) return "''";
+  if (/^[\w./:${}@+-]+$/.test(value) && !/^[:\-?|&*!%@`']/.test(value)) {
+    return value;
+  }
+  return JSON.stringify(value);
 }
 
 export function renderMoraConfig(options: MoraConfigOptions): string {
@@ -41,9 +79,16 @@ export function renderMoraConfig(options: MoraConfigOptions): string {
   const warehouseSection =
     database === 'duckdb'
       ? `  # Run \`mora connection add\` to point this project at a real warehouse.\n` +
-        `  # Mora can open ${Object.keys(WAREHOUSE_BLOCKS).join(', ')} connections.`
-      : `  # Fill in the values below before running queries.\n` +
-        indent(WAREHOUSE_BLOCKS[database](warehouseName), 2);
+        `  # Mora can open ${Object.keys(DATABASES)
+          .filter((id) => id !== 'duckdb')
+          .join(', ')} connections.`
+      : `  # Filled in by \`mora init\`. Edit or re-run \`mora connection add\` to change.\n` +
+        indent(
+          renderWarehouseBlock(database, warehouseName, options.warehouseSettings ?? {}, {
+            modelsDir,
+          }),
+          2,
+        );
 
   return `# Mora semantic layer configuration.
 #

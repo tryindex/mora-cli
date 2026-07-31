@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 
 export const ENV_FILENAME = '.env';
 export const ENV_EXAMPLE_FILENAME = '.env.example';
@@ -123,6 +123,61 @@ export async function readEnvFile(absolutePath: string): Promise<Record<string, 
   }
 
   return values;
+}
+
+/**
+ * Writes or updates assignments in a `.env` file. Existing keys are replaced
+ * in place so comments and unrelated lines survive; new keys are appended.
+ * Values are never written with surrounding quotes unless they need them.
+ */
+export async function writeEnvValues(
+  absolutePath: string,
+  values: Record<string, string>,
+  options: { header?: string } = {},
+): Promise<'created' | 'updated'> {
+  const entries = Object.entries(values);
+  if (entries.length === 0) {
+    return existsSync(absolutePath) ? 'updated' : 'created';
+  }
+
+  if (!existsSync(absolutePath)) {
+    const body = entries.map(([name, value]) => `${name}=${envAssignment(value)}`).join('\n');
+    const header = options.header?.trimEnd() ?? '';
+    await writeFile(absolutePath, `${header}${header ? '\n\n' : ''}${body}\n`, 'utf8');
+    return 'created';
+  }
+
+  const current = await readFile(absolutePath, 'utf8');
+  const lines = current.split('\n');
+  const remaining = new Map(entries);
+  const updated = lines.map((line) => {
+    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
+    if (!match?.[1] || !remaining.has(match[1])) return line;
+    const name = match[1];
+    const value = remaining.get(name) ?? '';
+    remaining.delete(name);
+    return `${name}=${envAssignment(value)}`;
+  });
+
+  if (remaining.size > 0) {
+    const suffix = [...remaining.entries()]
+      .map(([name, value]) => `${name}=${envAssignment(value)}`)
+      .join('\n');
+    const base = updated.join('\n').replace(/\n*$/, '');
+    await writeFile(absolutePath, `${base}\n${suffix}\n`, 'utf8');
+  } else {
+    await writeFile(absolutePath, updated.join('\n'), 'utf8');
+  }
+
+  return 'updated';
+}
+
+function envAssignment(value: string): string {
+  if (value.length === 0) return '';
+  if (/[\s#'"]/.test(value) || value.includes('\\')) {
+    return JSON.stringify(value);
+  }
+  return value;
 }
 
 export function describeEnvironment(

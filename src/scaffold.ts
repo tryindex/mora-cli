@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import type { DatabaseId } from './databases.js';
+import { type DatabaseId, defaultWarehouseSettings } from './databases.js';
 import { collectEnvVars, ENV_EXAMPLE_FILENAME } from './env.js';
 import { MoraError } from './errors.js';
 import {
@@ -39,6 +39,12 @@ export interface ScaffoldSpec {
   database: DatabaseId;
   modelsDir: string;
   includeExample: boolean;
+  /**
+   * Settings for a credentialed warehouse, as they should appear in mora.yaml.
+   * Ignored when `database` is DuckDB; when omitted for a warehouse, the
+   * registry's suggested defaults (`${VAR}` references) are used.
+   */
+  warehouseSettings?: Record<string, string>;
 }
 
 export type WriteStrategy = 'replace' | 'merge-lines' | 'managed-block';
@@ -133,6 +139,10 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
     database: spec.database,
     duckdbConnectionName: DUCKDB_CONNECTION_NAME,
     warehouseConnectionName: WAREHOUSE_CONNECTION_NAME,
+    warehouseSettings:
+      spec.database === 'duckdb'
+        ? undefined
+        : (spec.warehouseSettings ?? defaultWarehouseSettings(spec.database, paths.modelsDir)),
     cliVersion: CLI_VERSION,
   });
 

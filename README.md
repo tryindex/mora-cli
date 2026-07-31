@@ -58,7 +58,8 @@ mora query monthly_revenue          # run a definition someone reviewed
 mora validate                       # after any edit to a model
 ```
 
-When you are ready to point it at real data, add a connection:
+When you are ready to point it at real data, either choose BigQuery during
+`mora init` (it will walk you through the connection) or add one later:
 
 ```bash
 mora connection add warehouse --type bigquery
@@ -91,22 +92,32 @@ the semantic layer with raw SQL. The longer references it points at live in
 Usage: mora init [options] [directory]
 
 Options:
-  -n, --name <name>    project name
-  -d, --db <database>  data source (duckdb, bigquery)
-  -m, --models <dir>   directory for Malloy models (default: metrics)
-  --no-example         skip the example model and its sample data
-  -y, --yes            accept defaults without prompting
-  -f, --force          overwrite existing files
-  --no-compile         skip the Malloy compile check
-  --json               print a machine-readable result instead of prose
+  -n, --name <name>                    project name
+  -d, --db <database>                  data source (duckdb, bigquery)
+  -m, --models <dir>                   directory for Malloy models (default: metrics)
+  --no-example                         skip the example model and its sample data
+  -y, --yes                            accept defaults without prompting
+  -f, --force                          overwrite existing files
+  --no-compile                         skip the Malloy compile check
+  --no-test                            skip the warehouse connectivity check
+  --project-id <value>                 BigQuery: GCP project id
+  --location <value>                   BigQuery: location
+  --service-account-key-path <value>   BigQuery: service account key file
+  --billing-project-id <value>         BigQuery: billing project id
+  --json                               print a machine-readable result instead of prose
 ```
 
 DuckDB works with no configuration, which is why it is the default: point it at
 local CSV, Parquet or `.duckdb` files and you have a semantic layer in one
-command. Choosing BigQuery writes a connection block that reads
-`${GOOGLE_CLOUD_PROJECT}` from the environment, so nothing about your warehouse
-ends up in version control. The DuckDB connection is always included, so a
-project always has one connection that works — and you can add more later with
+command. Choosing BigQuery interactively asks for the connection settings, writes
+credential values into `.env`, and tests that the warehouse answers — so you leave
+the flow ready to query. If you have run `gcloud auth application-default login`,
+those credentials are offered as the default and you pick the project from a
+searchable list of the ones you can actually query, so setup is two
+confirmations. The same settings are available as flags for unattended runs;
+prefer `${VAR}` references so nothing about your warehouse ends up in version
+control. The DuckDB connection is always included, so a project always has one
+connection that works — and you can add more later with
 [`mora connection add`](#mora-connection).
 
 Models go in `metrics/`, and init does not ask: every Mora project keeping them in
@@ -172,9 +183,23 @@ mora connection add exports -t duckdb --database exports.duckdb --yes
 
 BigQuery authenticates with Application Default Credentials
 (`gcloud auth application-default login`); point `service_account_key_path` at a
-key file to use a service account instead. A Publisher server keeps its own
-connection config — Mora does not edit `publisher.config.json`, so a served
-project can read from a different warehouse than your laptop does.
+key file to use a service account instead. Interactively, Mora reads your gcloud
+state and offers what you are already signed in with: it confirms the account and
+skips the key file prompt when you accept. If you have never logged in, it says
+which command to run.
+
+Rather than asking you to recall a project id, it then lists the projects those
+credentials can actually run BigQuery in — type to search by name or id, and the
+project your gcloud configuration points at is preselected so Enter accepts it.
+Large organisations are paged through transparently; if the list is cut short, or
+the project you want is not on it, choose `Enter a project id by hand` to type one
+(including a `${VAR}` reference). Nothing here changes unattended runs: with
+`--yes` or `--json` Mora makes no network calls and writes the same `mora.yaml` on
+every machine.
+
+A Publisher server keeps its own connection config — Mora does not edit
+`publisher.config.json`, so a served project can read from a different warehouse
+than your laptop does.
 
 ## `mora validate`
 
