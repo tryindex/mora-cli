@@ -117,6 +117,82 @@ export async function listBigQueryProjects(
   return { projects: sortProjects(seen), truncated: false };
 }
 
+/** One page of `datasets.list`, trimmed to the one thing the sweep asks of it. */
+interface DatasetPage {
+  datasets?: unknown[];
+}
+
+/** Answers "does this project hold any data". Injectable for tests. */
+export type DatasetTransport = (projectId: string) => Promise<DatasetPage>;
+
+export interface DataProbe {
+  /** Projects holding at least one dataset these credentials can see. */
+  withData: Set<string>;
+  /**
+   * False when some projects went unchecked, so `withData` is not the whole
+   * answer. A caller that hides projects must show all of them instead: hiding
+   * one that does have data is worse than listing one that does not.
+   */
+  complete: boolean;
+}
+
+const PROBE_CONCURRENCY = 16;
+/**
+ * Long enough for a few hundred projects, short enough that a reader is not left
+ * watching a spinner. Beyond it the sweep reports itself incomplete.
+ */
+const PROBE_BUDGET_MS = 8_000;
+
+/**
+ * Which of these projects have data to read. `projects.list` returns everything
+ * the caller holds any role on, which in an organisation is mostly projects that
+ * have never used BigQuery; a project with no datasets can open a connection and
+ * answer no questions, which is the half-configured state worth avoiding.
+ *
+ * There is no API that answers this in one call, so it is one `datasets.list` per
+ * project, capped at one row, run a few at a time. Errors are per project and
+ * never thrown: no permission to list datasets and BigQuery switched off both
+ * mean the same thing to a reader choosing where to point a model.
+ */
+export async function findProjectsWithData(
+  state: GcloudState,
+  projectIds: string[],
+  transport?: DatasetTransport,
+): Promise<DataProbe> {
+  if (state.adc === null) return { withData: new Set(), complete: false };
+
+  const request = transport ?? (await datasetTransport(state));
+  if (!request) return { withData: new Set(), complete: false };
+
+  const withData = new Set<string>();
+  const deadline = Date.now() + PROBE_BUDGET_MS;
+  const queue = [...projectIds];
+  let unchecked = false;
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const projectId = queue.shift();
+      if (projectId === undefined) return;
+      if (Date.now() > deadline) {
+        unchecked = true;
+        return;
+      }
+      try {
+        const page = await request(projectId);
+        if ((page.datasets ?? []).length > 0) withData.add(projectId);
+      } catch {
+        // Treated as no data, and deliberately not fatal: one unreadable project
+        // out of hundreds must not throw away everything the sweep did learn.
+      }
+    }
+  };
+
+  const workers = Math.min(PROBE_CONCURRENCY, queue.length);
+  await Promise.all(Array.from({ length: workers }, worker));
+
+  return { withData, complete: !unchecked };
+}
+
 function pageUrl(token: string | undefined): string {
   const url = new URL(PROJECTS_ENDPOINT);
   url.searchParams.set('maxResults', String(PAGE_SIZE));
@@ -130,13 +206,33 @@ function sortProjects(seen: Map<string, GcloudProject>): GcloudProject[] {
   );
 }
 
+async function bigQueryTransport(state: GcloudState): Promise<ProjectTransport | undefined> {
+  const get = await authorizedGet(state);
+  return get && ((url) => get<ProjectPage>(url));
+}
+
+async function datasetTransport(state: GcloudState): Promise<DatasetTransport | undefined> {
+  const get = await authorizedGet(state);
+  if (!get) return undefined;
+
+  return (projectId) => {
+    const url = new URL(`${PROJECTS_ENDPOINT}/${encodeURIComponent(projectId)}/datasets`);
+    // One row is all the question needs; asking for a project's whole dataset
+    // list would be paying to page through data nobody reads.
+    url.searchParams.set('maxResults', '1');
+    return get<DatasetPage>(url.toString());
+  };
+}
+
 /**
  * An authenticated GET against BigQuery, built from the credentials file
  * detection already found. `GoogleAuth.getClient()` is deliberately not used: it
  * probes for a GCE metadata server, which costs about nine seconds on a laptop,
  * where reading the file we have already located costs milliseconds.
  */
-async function bigQueryTransport(state: GcloudState): Promise<ProjectTransport | undefined> {
+async function authorizedGet(
+  state: GcloudState,
+): Promise<(<T>(url: string) => Promise<T>) | undefined> {
   if (!state.adcPath) return undefined;
 
   try {
@@ -148,10 +244,7 @@ async function bigQueryTransport(state: GcloudState): Promise<ProjectTransport |
     const { GoogleAuth } = await import('google-auth-library');
     const client = new GoogleAuth({ scopes: [BIGQUERY_SCOPE] }).fromJSON(credentials as JWTInput);
 
-    return async (url) => {
-      const response = await client.request<ProjectPage>({ url });
-      return response.data;
-    };
+    return async <T>(url: string) => (await client.request<T>({ url })).data;
   } catch {
     // An external-account or otherwise unsupported credential file lands here.
     // The picker is skipped; typing a project id still works.

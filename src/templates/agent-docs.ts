@@ -229,8 +229,9 @@ unset, so a \`test\` that fails on a keyless connection usually means
 \`gcloud auth application-default login\` has not been run for an account with
 access. Ask the person you are working with to run it; it needs a browser, so you
 cannot do it for them. Run without \`--project-id\`, a human is also shown a
-searchable list of the projects their credentials can query — which is why an
-unattended run must pass the project explicitly rather than expect a default.
+searchable list of the projects their credentials can query, narrowed to the ones
+holding a dataset they can read — which is why an unattended run must pass the
+project explicitly rather than expect a default.
 
 ## mora upgrade
 

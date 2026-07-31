@@ -28,6 +28,8 @@ import { ExitCode, MoraError } from '../errors.js';
 import {
   ADC_LOGIN_COMMAND,
   detectGcloud,
+  findProjectsWithData,
+  type GcloudProject,
   type GcloudState,
   listBigQueryProjects,
 } from '../gcloud.js';
@@ -603,10 +605,18 @@ interface GcloudOffer {
 }
 
 /**
- * Chosen from the picker to mean "let me type one instead". A colon cannot
- * appear in a GCP project id, so this can never collide with a real one.
+ * Chosen from the picker to mean "let me type one instead", and "list the ones
+ * you filtered out". A colon cannot appear in a GCP project id, so neither can
+ * ever collide with a real one.
  */
 const ENTER_MANUALLY = 'mora:enter-by-hand';
+const SHOW_ALL = 'mora:show-all';
+
+/**
+ * Above this many projects the list stops being scannable and a sweep for which
+ * ones hold data earns its couple of seconds. Below it, everything is offered.
+ */
+const FILTER_THRESHOLD = 25;
 
 /**
  * Uses whatever `gcloud` is already signed in as. The Google client libraries
@@ -699,20 +709,55 @@ async function pickProject(state: GcloudState): Promise<string | undefined> {
     );
   }
 
-  const options = projects.map((project) => ({
-    value: project.id,
-    label: project.name ?? project.id,
-    hint: project.name ? project.id : undefined,
-  }));
-  options.push({ value: ENTER_MANUALLY, label: 'Enter a project id by hand', hint: undefined });
+  let offered = (await projectsWithData(state, projects)) ?? projects;
 
-  const picked = unlessCancelled(
+  for (;;) {
+    const picked = await promptForProject(offered, projects.length, state);
+    if (picked !== SHOW_ALL) return picked === ENTER_MANUALLY ? undefined : picked;
+    // Already known, so reopening the picker costs nothing: no second sweep.
+    offered = projects;
+  }
+}
+
+/**
+ * Narrows a long list to the projects that hold data. Returns undefined when
+ * every project should be offered — a short list is already scannable and not
+ * worth the wait, and an incomplete or empty answer is not one to hide behind.
+ */
+async function projectsWithData(
+  state: GcloudState,
+  projects: GcloudProject[],
+): Promise<GcloudProject[] | undefined> {
+  if (projects.length <= FILTER_THRESHOLD) return undefined;
+
+  const spinner = process.stdout.isTTY ? prompts.spinner() : undefined;
+  spinner?.start(`Checking which of those ${count(projects.length, 'project')} hold data`);
+
+  const ids = projects.map((project) => project.id);
+  const { withData, complete } = await findProjectsWithData(state, ids);
+  const filtered = projects.filter((project) => withData.has(project.id));
+
+  if (!complete || filtered.length === 0) {
+    spinner?.stop('Could not tell which projects hold data, so all are listed');
+    return undefined;
+  }
+
+  spinner?.stop(`${count(filtered.length, 'project')} with data you can read`);
+  return filtered;
+}
+
+async function promptForProject(
+  offered: GcloudProject[],
+  total: number,
+  state: GcloudState,
+): Promise<string> {
+  return unlessCancelled(
     await prompts.autocomplete<string>({
       message: 'Which project should the models read?',
-      options,
+      options: projectOptions(offered, total),
       // The project gcloud is configured with is the likeliest answer, so it
       // stays one keypress away even in a list of hundreds.
-      initialValue: projects.some((project) => project.id === state.project)
+      initialValue: offered.some((project) => project.id === state.project)
         ? state.project
         : undefined,
       placeholder: 'Type to search by name or id',
@@ -720,8 +765,32 @@ async function pickProject(state: GcloudState): Promise<string | undefined> {
       filter: (search, option) => matchesProject(search, option.value, option.label),
     }),
   );
+}
 
-  return picked === ENTER_MANUALLY ? undefined : picked;
+/**
+ * The picker's rows: the projects on offer, then the ways out of them. `total` is
+ * how many exist, so a shortlist can say what it is hiding.
+ */
+export function projectOptions(
+  offered: GcloudProject[],
+  total: number,
+): { value: string; label: string; hint?: string }[] {
+  const options = offered.map((project) => ({
+    value: project.id,
+    label: project.name ?? project.id,
+    hint: project.name ? project.id : undefined,
+  }));
+
+  if (offered.length < total) {
+    options.push({
+      value: SHOW_ALL,
+      label: `Show all ${count(total, 'project')}`,
+      hint: 'including those with no data',
+    });
+  }
+  options.push({ value: ENTER_MANUALLY, label: 'Enter a project id by hand', hint: undefined });
+
+  return options;
 }
 
 /** Searches what the reader can see: the display name and the id itself. */
@@ -729,8 +798,8 @@ export function matchesProject(search: string, value: string, label?: string): b
   const needle = search.trim().toLowerCase();
   if (needle.length === 0) return true;
   // Kept reachable while filtering: a reader whose project is missing from the
-  // list is exactly the one who searched and found nothing.
-  if (value === ENTER_MANUALLY) return true;
+  // shortlist is exactly the one who searched and found nothing.
+  if (value === ENTER_MANUALLY || value === SHOW_ALL) return true;
   return value.toLowerCase().includes(needle) || (label ?? '').toLowerCase().includes(needle);
 }
 

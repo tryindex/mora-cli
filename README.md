@@ -113,8 +113,8 @@ command. Choosing BigQuery interactively asks for the connection settings, write
 credential values into `.env`, and tests that the warehouse answers — so you leave
 the flow ready to query. If you have run `gcloud auth application-default login`,
 those credentials are offered as the default and you pick the project from a
-searchable list of the ones you can actually query, so setup is two
-confirmations. The same settings are available as flags for unattended runs;
+searchable list of the ones you can actually query — narrowed to the ones holding
+data when you have access to many — so setup is two confirmations. The same settings are available as flags for unattended runs;
 prefer `${VAR}` references so nothing about your warehouse ends up in version
 control. The DuckDB connection is always included, so a project always has one
 connection that works — and you can add more later with
@@ -196,6 +196,15 @@ the project you want is not on it, choose `Enter a project id by hand` to type o
 (including a `${VAR}` reference). Nothing here changes unattended runs: with
 `--yes` or `--json` Mora makes no network calls and writes the same `mora.yaml` on
 every machine.
+
+Google returns every project you hold a role on, which in an organisation is
+mostly projects that have never used BigQuery. So when the list runs past about
+twenty-five, Mora checks which of them hold a dataset you can read and offers
+those — a connection to a project with no datasets opens successfully and can
+answer nothing. The check takes a second or two and the full list stays one
+option away, under `Show all N projects`. If it cannot tell (no permission to list
+datasets, or too many projects to check quickly), every project is offered rather
+than a shortlist that might be missing yours.
 
 A Publisher server keeps its own connection config — Mora does not edit
 `publisher.config.json`, so a served project can read from a different warehouse
