@@ -6,6 +6,7 @@ import { registerDescribeCommand } from './commands/describe.js';
 import { registerInitCommand } from './commands/init.js';
 import { registerPluginCommand } from './commands/plugin.js';
 import { registerQueryCommand } from './commands/query.js';
+import { registerSchemaCommand } from './commands/schema.js';
 import { registerUpgradeCommand } from './commands/upgrade.js';
 import { registerValidateCommand } from './commands/validate.js';
 import { ExitCode, type MoraError, toMoraError } from './errors.js';
@@ -36,6 +37,7 @@ function buildProgram(): Command {
   registerValidateCommand(program);
   registerDescribeCommand(program);
   registerQueryCommand(program);
+  registerSchemaCommand(program);
   registerConnectionCommand(program);
   registerPluginCommand(program);
 

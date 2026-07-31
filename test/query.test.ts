@@ -5,18 +5,27 @@ import { describe, expect, it } from 'vitest';
 import { runQueryCommand } from '../src/commands/query.js';
 import { MoraError } from '../src/errors.js';
 import { buildScaffold, type ScaffoldSpec, writeScaffold } from '../src/scaffold.js';
+import { writeOrdersModel } from './helpers/fixtures.js';
 
 const spec: ScaffoldSpec = {
   root: '',
   projectName: 'analytics',
   database: 'duckdb',
   modelsDir: 'metrics',
-  includeExample: true,
+  connectionName: 'duckdb',
 };
 
-async function scaffoldProject(overrides: Partial<ScaffoldSpec> = {}): Promise<string> {
+/**
+ * A scaffold plus the orders fixture, which is what a project looks like once
+ * someone has written their first model. `init` writes no model of its own.
+ */
+async function scaffoldProject(
+  options: { withModel?: boolean } & Partial<ScaffoldSpec> = {},
+): Promise<string> {
+  const { withModel = true, ...overrides } = options;
   const root = await mkdtemp(path.join(tmpdir(), 'mora-query-'));
   await writeScaffold(root, buildScaffold({ ...spec, ...overrides, root }));
+  if (withModel) await writeOrdersModel(root);
   return root;
 }
 
@@ -39,7 +48,7 @@ describe('runQueryCommand', () => {
     expect(report.ok).toBe(true);
     expect(report.command).toBe('query');
     expect(report.name).toBe('monthly_revenue');
-    expect(report.model).toBe('metrics/example.malloy');
+    expect(report.model).toBe('metrics/orders.malloy');
     expect(report.executed).toBe(true);
     // A definition someone committed has been through review.
     expect(report.reviewed).toBe(true);
@@ -59,6 +68,42 @@ describe('runQueryCommand', () => {
     expect(bare.rows[0]).toHaveProperty('region');
   });
 
+  it('runs a named view that groups by a joined field', async () => {
+    const root = await scaffoldProject();
+    await writeFile(
+      path.join(root, 'metrics/data/regions.csv'),
+      'region,manager\nnorth,ana\nsouth,bo\n',
+      'utf8',
+    );
+    await writeFile(
+      path.join(root, 'metrics/joined.malloy'),
+      [
+        "source: regions is duckdb.table('data/regions.csv') extend {",
+        '  primary_key: region',
+        '}',
+        '',
+        "source: sales is duckdb.table('data/orders.csv') extend {",
+        '  join_one: regions with region',
+        '  measure: revenue is amount.sum()',
+        '',
+        '  view: revenue_by_manager is {',
+        '    group_by: regions.manager',
+        '    aggregate: revenue',
+        '  }',
+        '}',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const report = await runQueryCommand(root, 'sales.revenue_by_manager', { json: true });
+
+    // The join has to survive into the SQL. Selecting a joined column without
+    // joining the table compiles in Malloy and is rejected by the database.
+    expect(report.ok).toBe(true);
+    expect(report.sql).toMatch(/JOIN/i);
+    expect(report.rows[0]).toHaveProperty('manager');
+  });
+
   it('marks an ad-hoc expression as unreviewed and says what to do about it', async () => {
     const root = await scaffoldProject();
 
@@ -72,6 +117,59 @@ describe('runQueryCommand', () => {
     expect(report.reviewed).toBe(false);
     expect(report.rowCount).toBe(1);
     expect(report.nextSteps[0]).toMatch(/nobody has reviewed it/);
+  });
+
+  it('runs an expression that declares its own source, against a table no model names', async () => {
+    const root = await scaffoldProject();
+    await writeFile(
+      path.join(root, 'metrics/data/regions.csv'),
+      'region,manager\nwest,ana\neast,bo\n',
+      'utf8',
+    );
+
+    const report = await runQueryCommand(root, undefined, {
+      expr:
+        "source: probe is duckdb.table('data/regions.csv') extend {}\n" +
+        'run: probe -> { aggregate: rows is count() }',
+      json: true,
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.rows).toEqual([{ rows: 2 }]);
+    // Still unreviewed: declaring a scratch source is exploring, not modelling.
+    expect(report.reviewed).toBe(false);
+  });
+
+  it('discovers data in a project that has no models at all', async () => {
+    // The state that matters most: a connection that works, and nothing modelled
+    // yet. Needing a model to check the data would make the first step of
+    // modelling impossible.
+    const root = await scaffoldProject({ withModel: false });
+    await writeFile(path.join(root, 'metrics/sales.csv'), 'id,amount\n1,10\n1,20\n', 'utf8');
+
+    const report = await runQueryCommand(root, undefined, {
+      expr:
+        "source: probe is duckdb.table('sales.csv') extend {}\n" +
+        'run: probe -> { group_by: id; aggregate: rows is count() } -> ' +
+        '{ where: rows > 1; aggregate: duplicate_keys is count() }',
+      json: true,
+    });
+
+    expect(report.ok).toBe(true);
+    // The duplicate-key check the modelling guide opens with, answered before a
+    // single line of the model exists.
+    expect(report.rows).toEqual([{ duplicate_keys: 1 }]);
+  });
+
+  it('says how to reach the data when an expression names no source and there is no model', async () => {
+    const root = await scaffoldProject({ withModel: false });
+
+    const error = await moraError(
+      runQueryCommand(root, undefined, { expr: 'orders -> { aggregate: revenue }' }),
+    );
+
+    expect(error.code).toBe('ambiguous-model');
+    expect(error.hint).toMatch(/Declare the source in the expression itself/);
   });
 
   it('caps the rows and says when there were more', async () => {

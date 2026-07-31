@@ -25,17 +25,16 @@ Code, Codex, or your own.
 npx @moradata/cli init
 ```
 
-That walks you through naming the project and picking a data source, then writes
-a working semantic layer into the current directory:
+That walks you through naming the project and connecting to your data, then
+writes a semantic layer into the current directory:
 
 ```
-mora.yaml               # models directory + database connections
-metrics/
-  example.malloy        # a source with dimensions, measures and views
-  data/orders.csv       # sample data, so the example runs immediately
+mora.yaml               # models directory + the connection you just set up
+metrics/                # your models go here; it starts empty
 AGENTS.md               # the rules your agent must follow, plus your own
 .agents/
   malloy.md             # how to write Malloy, loaded when editing a model
+  modeling.md           # how to turn an unmodelled warehouse into a first draft
   mora.md               # the commands, their flags and their output
 .env.example            # which credentials the project needs, if any
 ```
@@ -44,20 +43,26 @@ Those files are meant to be committed. When a teammate clones the repo and runs
 the same command, Mora sets up their checkout instead of scaffolding again — see
 [Adopting a project someone else set up](#adopting-a-project-someone-else-set-up).
 
-Before finishing, `init` compiles the example against DuckDB. Because Malloy
-resolves table schemas at compile time, a pass means the model parses *and* the
-data really has the columns it references.
+Before finishing, `init` opens the connection. If the database does not answer,
+the scaffold is removed again and your directory is left exactly as it was: a
+project whose connection has never worked is not worth keeping, and every later
+command would fail on it. Fix the setting or the credential and run `init` again.
 
-From there the loop is three commands:
+Mora writes no models and no sample data. What belongs in `metrics/` is sources
+over your own tables, so the loop starts by looking at them:
 
 ```bash
+mora schema                         # what the connection can actually read
 mora describe                       # what the vocabulary already contains
-mora query monthly_revenue          # run a definition someone reviewed
 mora validate                       # after any edit to a model
+mora query revenue_by_month         # run a definition someone reviewed
 ```
 
-When you are ready to point it at real data, either choose BigQuery during
-`mora init` (it will walk you through the connection) or add one later:
+Point your agent at `.agents/modeling.md` and it will read the warehouse, check
+its assumptions against the data, and propose a first set of sources for you to
+review.
+
+To read from somewhere else as well, add a second connection:
 
 ```bash
 mora connection add warehouse --type bigquery
@@ -73,8 +78,8 @@ mora init ./analytics --db duckdb --name analytics --yes --json
 ```
 
 - `--yes` never prompts; `--json` implies it and prints a structured result.
-- `--json` output includes every file written, the compile result, and suggested
-  next steps.
+- `--json` output includes every file written, the connection check, and
+  suggested next steps.
 - Exit codes are meaningful: `0` success, `1` failure, `2` bad usage, `3` refused
   because files already exist.
 
@@ -82,7 +87,10 @@ mora init ./analytics --db duckdb --name analytics --yes --json
 it automatically; it tells the agent to compose existing measures, to extend the
 model rather than inline logic into one-off queries, and never to reach around
 the semantic layer with raw SQL. The longer references it points at live in
-`.agents/`, so they are read when they are needed rather than on every request.
+`.agents/`, so they are read when they are needed rather than on every request:
+how to write Malloy here, what each `mora` command reports, and — for the case
+where the question is about a table nobody has modelled yet — how to go from a
+warehouse to a reviewable first draft of a semantic layer.
 
 ## `mora init`
 
@@ -92,12 +100,11 @@ Usage: mora init [options] [directory]
 Options:
   -n, --name <name>                    project name
   -d, --db <database>                  data source (duckdb, bigquery)
+  --connection <name>                  name models will use for it (default: the database)
   -m, --models <dir>                   directory for Malloy models (default: metrics)
-  --no-example                         skip the example model and its sample data
   -y, --yes                            accept defaults without prompting
   -f, --force                          overwrite existing files
-  --no-compile                         skip the Malloy compile check
-  --no-test                            skip the warehouse connectivity check
+  --no-test                            keep the scaffold without checking the connection
   --project-id <value>                 BigQuery: GCP project id
   --location <value>                   BigQuery: location
   --service-account-key-path <value>   BigQuery: service account key file
@@ -105,18 +112,29 @@ Options:
   --json                               print a machine-readable result instead of prose
 ```
 
-DuckDB works with no configuration, which is why it is the default: point it at
-local CSV, Parquet or `.duckdb` files and you have a semantic layer in one
-command. Choosing BigQuery interactively asks for the connection settings, writes
-credential values into `.env`, and tests that the warehouse answers — so you leave
-the flow ready to query. If you have run `gcloud auth application-default login`,
-those credentials are offered as the default and you pick the project from a
-searchable list of the ones you can actually query — narrowed to the ones holding
-data when you have access to many — so setup is two confirmations. The same settings are available as flags for unattended runs;
-prefer `${VAR}` references so nothing about your warehouse ends up in version
-control. The DuckDB connection is always included, so a project always has one
-connection that works — and you can add more later with
+`init` declares exactly one connection: the one you picked. DuckDB needs no
+configuration — point it at local CSV, Parquet or `.duckdb` files and you have a
+semantic layer in one command. Choosing BigQuery asks for the connection
+settings and writes credential values into `.env`. If you have run
+`gcloud auth application-default login`, those credentials are offered as the
+default and you pick the project from a searchable list of the ones you can
+actually query — narrowed to the ones holding data when you have access to many —
+so setup is two confirmations. The same settings are available as flags for
+unattended runs; prefer `${VAR}` references so nothing about your warehouse ends
+up in version control. Add more connections later with
 [`mora connection add`](#mora-connection).
+
+Then it opens the connection, and **a scaffold whose connection does not answer
+is deleted again.** `--json` reports `rolledBack: true` with an empty `files`,
+and the directory is left as it was found — including any file `--force` would
+have overwritten. Nothing is half-written for you to clean up, and there is no
+project whose first real command fails. `--no-test` skips the check and keeps the
+scaffold, which is what to pass when the credential will only exist later.
+
+`metrics/` starts empty. Mora ships no example model and no sample data: a
+worked example over a fixture table models data you do not have, and the thing
+that actually gets you to a first source is `mora schema` plus
+`.agents/modeling.md`, which describe your warehouse rather than someone else's.
 
 Models go in `metrics/`, and init does not ask: every Mora project keeping them in
 the same place is worth more than the choice, and it lets the docs an agent reads
@@ -126,8 +144,8 @@ reads.
 
 ## `mora connection`
 
-The example runs on local files. A real semantic layer runs on your warehouse,
-and `mora connection` is how it gets there.
+`init` sets up the first connection. `mora connection` is how a project gains
+another one, and how you check that any of them still answer.
 
 ```
 mora connection add [name]     declare a connection and check that it works
@@ -164,7 +182,7 @@ credentials the machine happens to have.
 Models name the connection they read from, so several can coexist:
 
 ```malloy
-source: orders is duckdb.table('data/orders.csv')
+source: exports is duckdb.table('data/exports.csv')
 source: sessions is warehouse.table('analytics.sessions')
 ```
 
@@ -227,10 +245,10 @@ $ mora validate
 ┌   mora validate
 │
 ◇  Models ────────────────────────────────────────────────────╮
-│    pass metrics/example.malloy  1 source, 3 named queries  │
+│    pass metrics/orders.malloy  1 source, 3 named queries    │
 ├─────────────────────────────────────────────────────────────╯
 │
-└  1 model compiled against duckdb.
+└  1 model compiled against warehouse.
 ```
 
 Exit code `0` means every model compiled, `1` means at least one failed or the
@@ -257,7 +275,7 @@ queries that can be run directly:
 $ mora describe revenue
 ┌   mora describe
 │
-◇  orders  metrics/example.malloy ──────────────────────────────────────╮
+◇  orders  metrics/orders.malloy ───────────────────────────────────────╮
 │  One row per order, with the customer and region that placed it.      │
 │  measures                                                             │
 │    revenue  number                                                    │
@@ -297,7 +315,7 @@ A name runs a definition someone committed and reviewed — either a `query:`
 declaration or a view, written as `source.view`:
 
 ```bash
-mora query monthly_revenue
+mora query revenue_by_month
 mora query orders.revenue_by_month --limit 12
 ```
 
@@ -316,9 +334,87 @@ Malloy is allowed on purpose — forbidding it would just push an agent back to 
 SQL — but the output nudges toward promoting anything worth keeping into a named
 definition, where a pull request can catch a mistake before a dashboard does.
 
+`--expr` takes a whole Malloy document rather than just a query, which is what
+lets it read a table no model mentions yet:
+
+```bash
+mora query -e "source: probe is duckdb.table('data/orders.csv') extend {}
+run: probe -> { group_by: status; aggregate: rows is count() }"
+```
+
+That works in a project with nothing in `metrics/` at all, which matters because
+checking the data is the first step of modelling it, not something to do
+afterwards.
+
 `--json` reports `{ ok, command, name, reviewed, model, sql, executed, rows,
 rowCount, truncated, nextSteps }`. An unknown name exits `1` and lists the names
 that do exist.
+
+## `mora schema`
+
+```
+Usage: mora schema [options] [tables...]
+
+Options:
+  -c, --connection <name>  connection to read (default: the project default)
+  -C, --directory <dir>    project directory (default: .)
+  --pattern <text>         only list tables whose name contains this text
+  --json                   print a machine-readable result instead of prose
+```
+
+Where `describe` shows the semantic layer, `schema` shows the warehouse behind
+it. It answers the question an agent hits the moment it is asked about data
+nobody has modelled: what is even in here?
+
+Run it with no argument first. The listing is where valid table names come from,
+so nothing has to be guessed, and every name it prints goes inside
+`<connection>.table('...')` unchanged:
+
+```
+$ mora schema
+┌   mora schema
+│
+◇  Tables in duckdb duckdb ─╮
+│    data/orders.csv  file  │
+├───────────────────────────╯
+│
+└  1 table
+```
+
+Then read the columns, naming as many tables as you want in one pass:
+
+```bash
+mora schema data/orders.csv
+mora schema analytics.orders analytics.customers --json
+```
+
+The types that come back are Malloy types, because they are read the same way a
+model reads them — a table that describes cleanly here is one a source can be
+written against. A table that cannot be read carries its own `error` and makes
+`ok` false, so an empty column list is never mistaken for a table with no
+columns.
+
+There is no cached catalog on disk, and deliberately so. The listing is cheap, an
+agent keeps the answer in context for as long as it is working, and the only
+thing a stored copy would add is the ability to outlive the warehouse it
+describes. For a very large catalog, narrow it with `--pattern`; `truncated` says
+when a listing was cut short.
+
+What gets listed depends on the connection. A DuckDB connection reads files as
+well as registered tables, so both appear, with the files named relative to the
+connection's working directory. A BigQuery connection lists the whole project
+where it is allowed to, and otherwise falls back to the datasets your credentials
+can actually see — being told nothing because most of the project is none of your
+business is not an answer. If even that is denied, the error names the role to ask
+for.
+
+Seeing a table is not the same as understanding it. A schema cannot tell you
+whether a key has duplicates, whether a foreign key is unique on the other side,
+or whether `total` includes tax — and each of those changes the model. That is
+what `.agents/modeling.md` is for: Mora scaffolds it alongside the other agent
+docs, and it walks an agent from `mora schema` through checking those assumptions
+with `mora query -e` to a scope agreed with a human and a pull request full of
+documented definitions.
 
 ## Adopting a project someone else set up
 
@@ -375,8 +471,10 @@ scaffolded before this existed) is treated as an upgrade pending.
 Guidance for agents is split by who maintains it, so upgrading never argues with
 a rule your team wrote:
 
-- `.agents/malloy.md` and `.agents/mora.md` belong to Mora. They are replaced
-  wholesale by `mora upgrade`. Don't edit them.
+- `.agents/malloy.md`, `.agents/modeling.md` and `.agents/mora.md` belong to
+  Mora. They are replaced wholesale by `mora upgrade`, which also adds a guide a
+  project is missing because it was scaffolded before that guide existed. Don't
+  edit them.
 - `AGENTS.md` is shared. Mora maintains the part between its
   `mora:begin`/`mora:end` markers and scaffolds a `## Team conventions` section
   below it. Anything outside the markers is yours and survives upgrades.
@@ -390,9 +488,12 @@ where they were.
 
 ## What a model looks like
 
+Mora does not write this for you — it is what you or your agent puts in
+`metrics/` once `mora schema` has said what the tables are.
+
 ```malloy
 #" One row per order, with the customer who placed it.
-source: orders is duckdb.table('data/orders.csv') extend {
+source: orders is warehouse.table('analytics.orders') extend {
   primary_key: id
 
   dimension:
@@ -414,7 +515,7 @@ source: orders is duckdb.table('data/orders.csv') extend {
   }
 }
 
-query: monthly_revenue is orders -> revenue_by_month
+query: revenue_by_month is orders -> revenue_by_month
 ```
 
 `revenue` is now defined in exactly one place. Every query that uses it, whether
@@ -468,9 +569,9 @@ npx @malloy-publisher/server --server_root .
 
 The plugin writes `metrics/publisher.json`, which makes the models directory a
 package, and `publisher.config.json`, which lists the packages a server should
-load. Table paths in a scaffolded model are relative to `metrics/`, which is what
-both Mora and Publisher resolve from, so the same `.malloy` file works in the CLI,
-in the VS Code Malloy extension, and on a server.
+load. A DuckDB connection resolves relative table paths from `metrics/`, which is
+what Publisher resolves a package's paths from too, so the same `.malloy` file
+works in the CLI, in the VS Code Malloy extension, and on a server.
 
 Both files are yours once written — add warehouse connections and environments to
 `publisher.config.json` freely. A Publisher server keeps its own connection
@@ -497,10 +598,11 @@ files, nextSteps }`.
 - More warehouses. DuckDB and BigQuery work today; Snowflake, Postgres and
   Trino are the drivers Malloy already has, and each is a connection type away.
 - `mora describe` growing from substring matching over names and doc strings into
-  real retrieval, so an agent can find a definition by meaning.
-- MCP over the development loop — `validate`, `describe` and `query` against a
-  checkout, for agents that prefer tools to shell commands. Serving finished
-  models over MCP is Publisher's job, and stays there.
+  real retrieval, so an agent can find a definition by meaning. Searching the
+  warehouse schema is a separate problem, and `mora schema` is where it lives.
+- MCP over the development loop — `validate`, `describe`, `schema` and `query`
+  against a checkout, for agents that prefer tools to shell commands. Serving
+  finished models over MCP is Publisher's job, and stays there.
 - More plugins, and third-party ones worth naming here. The interface is
   deliberately small (`setup` returns files); it will grow only where a real
   integration cannot be expressed.
@@ -520,21 +622,29 @@ npm run lint
 Try the CLI without installing it globally:
 
 ```bash
-node dist/cli.js init /tmp/demo --yes --json
+node dist/cli.js init /tmp/demo --yes --json     # empty metrics/, one duckdb connection
+node dist/cli.js schema -C /tmp/demo --json
 node dist/cli.js validate /tmp/demo --json
-node dist/cli.js describe -C /tmp/demo
-node dist/cli.js query monthly_revenue -C /tmp/demo
 ```
 
-To check that a scaffolded project is still servable, add the Publisher plugin,
-run Publisher against it, and query the same definition through its API. The two
+A fresh project has no models, so write one before exercising `describe` and
+`query`. `test/helpers/fixtures.ts` has the orders model and CSV the test suite
+uses:
+
+```bash
+node dist/cli.js describe -C /tmp/demo
+node dist/cli.js query orders.revenue_by_month -C /tmp/demo
+```
+
+To check that such a project is still servable, add the Publisher plugin, run
+Publisher against it, and query the same definition through its API. The two
 should agree:
 
 ```bash
 cd /tmp/demo && node ../path/to/mora-cli/dist/cli.js plugin add publisher --json
 npx @malloy-publisher/server --server_root .
-curl -X POST -H 'Content-Type: application/json' -d '{"queryName":"monthly_revenue"}' \
-  http://localhost:4000/api/v0/environments/default/packages/demo/models/example.malloy/query
+curl -X POST -H 'Content-Type: application/json' -d '{"queryName":"revenue_by_month"}' \
+  http://localhost:4000/api/v0/environments/default/packages/demo/models/orders.malloy/query
 ```
 
 ## License

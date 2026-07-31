@@ -114,9 +114,12 @@ function named(runtime: Runtime, request: QueryRequest, vocabulary: Vocabulary):
   const query =
     definition.kind === 'query'
       ? model.loadQueryByName(definition.name)
-      : model
-          .loadExploreByName(definition.source as string)
-          .loadQueryByName(definition.view as string);
+      : // A view is run as `source -> view` rather than through
+        // loadExploreByName, which compiles the view against the source in
+        // isolation and drops its joins: the SQL still selects the joined
+        // column but never joins the table, and the database rejects it. This
+        // is the form the guidance tells people to write anyway.
+        model.loadQuery(`run: ${quoteName(definition.source)} -> ${quoteName(definition.view)}`);
 
   return { query, name: definition.name, model: definition.model, reviewed: true };
 }
@@ -143,38 +146,77 @@ function resolve(name: string, vocabulary: Vocabulary): Definition {
 
 function adHoc(runtime: Runtime, request: QueryRequest, vocabulary: Vocabulary): LoadedQuery {
   const expr = request.expr as string;
-  const modelPath = chooseModel(vocabulary, expr, request.modelPaths);
+  const document = asQueryDocument(expr);
+  const named = vocabulary.sources.find((source) => mentions(expr, source.name));
+
+  // An expression that brings its own source resolves without a model to hang it
+  // off, and insisting on one would fail exactly where discovery begins: in a
+  // project whose models directory is still empty.
+  if (!named && declaresSource(document)) {
+    return { query: runtime.loadQuery(document), name: null, model: null, reviewed: false };
+  }
+
+  const modelPath = named?.model ?? soleModel(request.modelPaths);
   const url = pathToFileURL(path.join(request.root, modelPath));
 
   return {
-    query: runtime.loadModel(url).loadQuery(asQueryDocument(expr)),
+    query: runtime.loadModel(url).loadQuery(document),
     name: null,
     model: modelPath,
     reviewed: false,
   };
 }
 
-/** Malloy wants a statement; a bare `source -> {...}` is the natural thing to type. */
-function asQueryDocument(expr: string): string {
-  const trimmed = expr.trim();
-  return /^(run|query)\s*:/.test(trimmed) ? trimmed : `run: ${trimmed}`;
+function declaresSource(document: string): boolean {
+  return /(^|\n)\s*source\s*:/.test(document);
 }
 
 /**
- * Which model an ad-hoc expression belongs to. The sources it names are the only
- * reliable signal, since the expression itself says nothing about files.
+ * A name out of the model, written so Malloy reads it back as that same name.
+ * Backticks matter for the source someone declared as `` `year` ``: a reserved
+ * word is a legal definition name and an illegal bare reference.
  */
-function chooseModel(vocabulary: Vocabulary, expr: string, modelPaths: readonly string[]): string {
-  const named = vocabulary.sources.find((source) =>
-    new RegExp(`(^|[^\\w.])${escapeRegExp(source.name)}($|[^\\w])`).test(expr),
-  );
-  if (named) return named.model;
+function quoteName(name: string | undefined): string {
+  return `\`${name ?? ''}\``;
+}
 
+/**
+ * Malloy wants a statement; a bare `source -> {...}` is the natural thing to
+ * type. Anything already beginning with a statement keyword is passed through
+ * untouched, which is what lets an expression declare a scratch source of its
+ * own before running against it — the shape discovery work takes, when the
+ * table is not in the model yet.
+ */
+function asQueryDocument(expr: string): string {
+  const trimmed = expr.trim();
+  return STARTS_WITH_STATEMENT.test(trimmed) ? trimmed : `run: ${trimmed}`;
+}
+
+const STARTS_WITH_STATEMENT = /^(run\s*:|query\s*:|source\s*:|import\b|##)/;
+
+/**
+ * Whether an expression reads a source by name. The sources it names are the
+ * only reliable signal of which model it belongs to, since the expression itself
+ * says nothing about files.
+ */
+function mentions(expr: string, sourceName: string): boolean {
+  return new RegExp(`(^|[^\\w.])${escapeRegExp(sourceName)}($|[^\\w])`).test(expr);
+}
+
+/**
+ * The model an expression that named no source belongs to. One model is no
+ * guess; more than one is, and guessing would silently resolve a field against
+ * the wrong vocabulary.
+ */
+function soleModel(modelPaths: readonly string[]): string {
   if (modelPaths.length === 1) return modelPaths[0] as string;
 
   throw new MoraError('Cannot tell which model this expression belongs to.', {
     code: 'ambiguous-model',
-    hint: 'Start the expression with a source name, as `mora describe` lists it.',
+    hint:
+      modelPaths.length === 0
+        ? 'This project has no models yet. Declare the source in the expression itself: `source: probe is <connection>.table(...)` followed by `run:`.'
+        : 'Start the expression with a source name, as `mora describe` lists it.',
   });
 }
 

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -11,7 +11,7 @@ import { MANAGED_BEGIN, MANAGED_END } from '../src/scaffold.js';
 import { CLI_VERSION, compareSemver } from '../src/version.js';
 
 function initFlags(overrides: Partial<InitFlags> = {}): InitFlags {
-  return { example: true, compile: false, json: true, yes: true, ...overrides };
+  return { json: true, yes: true, ...overrides };
 }
 
 function upgradeFlags(overrides: Partial<UpgradeFlags> = {}): UpgradeFlags {
@@ -136,6 +136,37 @@ describe('mora upgrade', () => {
     expect(updated.indexOf(MANAGED_BEGIN)).toBeLessThan(updated.indexOf(MANAGED_END));
     expect(updated.indexOf(rule)).toBeGreaterThan(updated.indexOf(MANAGED_END));
     expect(updated).toContain('## Team conventions');
+  });
+
+  it('writes sample code against the project’s own default connection', async () => {
+    const root = await tempDir();
+    await runInit(
+      root,
+      initFlags({ name: 'retail', db: 'bigquery', connection: 'lake', test: false }),
+    );
+    await writeFile(path.join(root, '.agents/malloy.md'), 'stale guidance\n', 'utf8');
+
+    await runUpgrade(root, upgradeFlags());
+
+    // Refreshed docs have to name a connection this project declares, or the
+    // first thing an agent copies out of them will not compile.
+    const guide = await readFile(path.join(root, '.agents/malloy.md'), 'utf8');
+    expect(guide).toContain("lake.table('analytics.orders')");
+    expect(guide).not.toContain('duckdb.table');
+  });
+
+  it('adds a guide a project scaffolded by an older Mora never had', async () => {
+    const root = await scaffoldedProject();
+    // A checkout from before the guide existed has no such file, and an upgrade
+    // that only refreshed the docs it already found would leave it that way.
+    await rm(path.join(root, '.agents/modeling.md'));
+
+    const report = await runUpgrade(root, upgradeFlags());
+
+    expect(report.files).toContainEqual({ path: '.agents/modeling.md', action: 'created' });
+    await expect(readFile(path.join(root, '.agents/modeling.md'), 'utf8')).resolves.toContain(
+      'mora schema',
+    );
   });
 
   it('preserves comments in mora.yaml when stamping', async () => {

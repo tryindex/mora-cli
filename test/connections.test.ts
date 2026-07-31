@@ -14,13 +14,14 @@ import { loadConfig } from '../src/config.js';
 import { addConnection, syncEnvExample } from '../src/connections.js';
 import { resolveEnvRefs } from '../src/env.js';
 import { buildScaffold, type ScaffoldSpec, writeScaffold } from '../src/scaffold.js';
+import { writeOrdersModel } from './helpers/fixtures.js';
 
 const spec: ScaffoldSpec = {
   root: '',
   projectName: 'analytics',
   database: 'duckdb',
   modelsDir: 'metrics',
-  includeExample: true,
+  connectionName: 'duckdb',
 };
 
 /** Written as an escape so it stays a literal `${...}` reference. */
@@ -47,6 +48,7 @@ async function scaffoldProject(overrides: Partial<ScaffoldSpec> = {}): Promise<s
  */
 async function twoConnectionProject(): Promise<string> {
   const root = await scaffoldProject();
+  await writeOrdersModel(root);
 
   await mkdir(path.join(root, 'exports'), { recursive: true });
   await writeFile(
@@ -92,7 +94,7 @@ describe('a project with more than one connection', () => {
     expect(report.connections).toEqual(['duckdb', 'exports']);
     expect(report.connection).toBe('duckdb');
     expect(report.models.map((model) => model.path)).toEqual([
-      'metrics/example.malloy',
+      'metrics/orders.malloy',
       'metrics/regions.malloy',
     ]);
   });
@@ -201,7 +203,26 @@ describe('addConnection', () => {
       makeDefault: true,
     });
 
+    // The default is a property of the project, so it is written there rather
+    // than as a reserved key among the connection names.
+    const contents = await readFile(path.join(root, 'mora.yaml'), 'utf8');
+    expect(contents).toContain('  default_connection: warehouse');
     expect((await loadConfig(root)).defaultConnection).toBe('warehouse');
+  });
+
+  it('accepts a connection called `default`, which is no longer reserved', async () => {
+    const root = await scaffoldProject();
+
+    await addConnection(await loadConfig(root), {
+      name: 'default',
+      type: 'duckdb',
+      settings: { database: ':memory:' },
+      makeDefault: true,
+    });
+
+    const config = await loadConfig(root);
+    expect(config.connections.map((entry) => entry.name)).toEqual(['duckdb', 'default']);
+    expect(config.defaultConnection).toBe('default');
   });
 
   it('refuses a name the project already uses', async () => {

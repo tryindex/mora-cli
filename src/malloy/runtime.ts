@@ -104,6 +104,25 @@ export async function openRuntime(request: RuntimeRequest): Promise<OpenRuntime>
 }
 
 /**
+ * Opens one connection, hands it over, and closes it again. Used by the commands
+ * that talk to a database directly rather than through a model, so they resolve
+ * credentials and clean up their handles the same way compiling does.
+ */
+export async function withConnection<T>(
+  connection: SupportedConnectionConfig,
+  root: string | undefined,
+  use: (opened: Connection) => Promise<T>,
+): Promise<T> {
+  const lookup = await readEnvLookup(root);
+  const opened = await openConnection(connection, lookup);
+  try {
+    return await use(opened);
+  } finally {
+    await closeQuietly(opened);
+  }
+}
+
+/**
  * Opens one connection for a real connectivity check. Used by
  * `mora connection test`, which wants the driver's own verdict rather than
  * whether a model happens to compile.
@@ -112,13 +131,7 @@ export async function testConnection(
   connection: SupportedConnectionConfig,
   root?: string,
 ): Promise<void> {
-  const lookup = await readEnvLookup(root);
-  const opened = await openConnection(connection, lookup);
-  try {
-    await (opened as TestableConnection).test();
-  } finally {
-    await closeQuietly(opened);
-  }
+  await withConnection(connection, root, (opened) => (opened as TestableConnection).test());
 }
 
 async function openConnection(
@@ -139,8 +152,21 @@ async function openConnection(
   return new bigquery.BigQueryConnection(connection.name, undefined, settings);
 }
 
+/**
+ * BigQuery settings as the driver was given them. Exported for callers that have
+ * to name the project in SQL of their own: an INFORMATION_SCHEMA query must be
+ * qualified, and it has to be qualified with the project the connection really
+ * opened rather than with whatever is in the environment.
+ */
+export async function resolveBigQuery(
+  connection: BigQueryConnectionConfig,
+  root?: string,
+): Promise<BigQuerySettings> {
+  return resolveBigQuerySettings(connection, await readEnvLookup(root));
+}
+
 /** The subset of the driver's options a Mora connection can set. */
-interface BigQuerySettings {
+export interface BigQuerySettings {
   projectId?: string;
   billingProjectId?: string;
   location?: string;

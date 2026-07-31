@@ -86,6 +86,7 @@ export interface MoraConfig {
   /** Models directory, relative to the root, with forward slashes. */
   modelsDir: string;
   connections: ConnectionConfig[];
+  /** `project.default_connection`: what a model naming no connection reads from. */
   defaultConnection: string | undefined;
   plugins: PluginEntry[];
   /** Environment variables the config expects, from every `${VAR}` reference. */
@@ -134,7 +135,7 @@ export function parseConfig(contents: string, root: string): MoraConfig {
     projectName: readProjectName(project.name, root),
     modelsDir: readModelsDir(project.models),
     connections: readConnections(document.connections, root),
-    defaultConnection: readDefaultConnection(document.connections),
+    defaultConnection: readDefaultConnection(project.default_connection),
     plugins: readPlugins(document.plugins),
     requiredEnvVars: collectEnvVars(document),
   };
@@ -214,14 +215,11 @@ function readModelsDir(value: unknown): string {
 }
 
 function readDefaultConnection(value: unknown): string | undefined {
-  const connections = asRecord(value);
-  if (!connections) return undefined;
-  const name = connections.default;
-  if (name === undefined || name === null) return undefined;
-  if (typeof name !== 'string' || name.trim().length === 0) {
-    throw invalidConfig('`connections.default` must name one of the declared connections.');
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw invalidConfig('`project.default_connection` must name one of the declared connections.');
   }
-  return name.trim();
+  return value.trim();
 }
 
 /**
@@ -280,7 +278,6 @@ function readConnections(value: unknown, root: string): ConnectionConfig[] {
 
   const parsed: ConnectionConfig[] = [];
   for (const [name, settings] of Object.entries(connections)) {
-    if (name === 'default') continue;
     parsed.push(readConnection(name, settings, root));
   }
   return parsed;

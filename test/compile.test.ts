@@ -5,22 +5,24 @@ import { describe, expect, it } from 'vitest';
 import type { DuckDbConnectionConfig } from '../src/config.js';
 import { compileModel } from '../src/malloy/compile.js';
 import { buildScaffold, resolvePaths, type ScaffoldSpec, writeScaffold } from '../src/scaffold.js';
+import { writeOrdersModel } from './helpers/fixtures.js';
 
 const spec: ScaffoldSpec = {
   root: '',
   projectName: 'analytics',
   database: 'duckdb',
   modelsDir: 'metrics',
-  includeExample: true,
+  connectionName: 'duckdb',
 };
 
 async function scaffoldProject() {
   const root = await mkdtemp(path.join(tmpdir(), 'mora-compile-'));
   await writeScaffold(root, buildScaffold({ ...spec, root }));
   const paths = resolvePaths(spec);
+  const { modelPath } = await writeOrdersModel(root, { modelsDir: paths.modelsDir });
   return {
     root,
-    modelPath: path.join(root, paths.exampleModelPath),
+    modelPath: path.join(root, modelPath),
     connections: [duckdb(path.join(root, paths.modelsDir))],
     defaultConnectionName: 'duckdb',
   };
@@ -38,7 +40,7 @@ function duckdb(workingDirectory: string): DuckDbConnectionConfig {
 }
 
 describe('compileModel', () => {
-  it('compiles the scaffolded example against DuckDB', async () => {
+  it('compiles a model against DuckDB', async () => {
     const project = await scaffoldProject();
 
     const result = await compileModel({

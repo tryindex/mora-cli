@@ -13,13 +13,14 @@ import {
 } from '../src/commands/plugin.js';
 import { loadConfig } from '../src/config.js';
 import { ExitCode } from '../src/errors.js';
+import { writeOrdersModel } from './helpers/fixtures.js';
 
 const MANIFEST = 'metrics/publisher.json';
 const SERVER_CONFIG = 'publisher.config.json';
 
 async function project(name = 'analytics'): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), 'mora-plugin-'));
-  await runInit(root, { example: true, compile: false, json: true, yes: true, name, test: false });
+  await runInit(root, { json: true, yes: true, name, test: false });
   return root;
 }
 
@@ -208,7 +209,8 @@ describe('mora plugin remove', () => {
 
   it('leaves the models alone', async () => {
     const root = await added();
-    const model = path.join(root, 'metrics/example.malloy');
+    const { modelPath } = await writeOrdersModel(root);
+    const model = path.join(root, modelPath);
     const before = await readFile(model, 'utf8');
 
     await runPluginRemove(root, 'publisher', { json: true, yes: true });

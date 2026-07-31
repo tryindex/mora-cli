@@ -1,44 +1,38 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { type DatabaseId, defaultWarehouseSettings } from './databases.js';
+import { DATABASES, type DatabaseId, defaultConnectionSettings } from './databases.js';
 import { collectEnvVars, ENV_EXAMPLE_FILENAME } from './env.js';
 import { MoraError } from './errors.js';
 import {
   type AgentDocsOptions,
   renderMalloyGuide,
+  renderModelingGuide,
   renderMoraGuide,
 } from './templates/agent-docs.js';
 import { renderAgentsDoc } from './templates/agents-doc.js';
 import { renderEnvExample } from './templates/env.js';
-import { renderExampleModel } from './templates/example-model.js';
 import { renderMoraConfig } from './templates/mora-config.js';
-import { SAMPLE_ORDERS_CSV } from './templates/sample-data.js';
 import { CLI_VERSION } from './version.js';
 
 export const CONFIG_FILENAME = 'mora.yaml';
 export const AGENTS_FILENAME = 'AGENTS.md';
 /** Docs Mora owns outright, kept out of AGENTS.md so upgrades never conflict. */
 export const AGENT_DOCS_DIR = '.agents';
-export const EXAMPLE_MODEL_FILENAME = 'example.malloy';
-export const SAMPLE_DATA_DIR = 'data';
-export const SAMPLE_DATA_FILENAME = 'orders.csv';
-export const DUCKDB_CONNECTION_NAME = 'duckdb';
-export const WAREHOUSE_CONNECTION_NAME = 'warehouse';
 
 export interface ScaffoldSpec {
   root: string;
   projectName: string;
   database: DatabaseId;
   modelsDir: string;
-  includeExample: boolean;
+  /** Name models will use for the connection, as in `warehouse.table('...')`. */
+  connectionName: string;
   /**
-   * Settings for a credentialed warehouse, as they should appear in mora.yaml.
-   * Ignored when `database` is DuckDB; when omitted for a warehouse, the
-   * registry's suggested defaults (`${VAR}` references) are used.
+   * Settings for that connection, as they should appear in mora.yaml. When
+   * omitted, the registry's suggested defaults (`${VAR}` references) are used.
    */
-  warehouseSettings?: Record<string, string>;
+  connectionSettings?: Record<string, string>;
 }
 
 export type WriteStrategy = 'replace' | 'merge-lines' | 'managed-block';
@@ -71,32 +65,15 @@ export interface ScaffoldPaths {
   configPath: string;
   agentsPath: string;
   modelsDir: string;
-  dataDir: string;
-  exampleModelPath: string;
-  sampleDataPath: string;
-  /**
-   * How the example model refers to its data: relative to the models directory
-   * rather than to the data directory. Malloy Publisher resolves a package's
-   * relative table paths from the package root, so a model written this way is
-   * servable as-is instead of only compiling under Mora.
-   */
-  sampleTablePath: string;
   connectionName: string;
 }
 
 export function resolvePaths(spec: ScaffoldSpec): ScaffoldPaths {
-  const modelsDir = normalizeRelative(spec.modelsDir);
-  const dataDir = `${modelsDir}/${SAMPLE_DATA_DIR}`;
-  const sampleTablePath = `${SAMPLE_DATA_DIR}/${SAMPLE_DATA_FILENAME}`;
   return {
     configPath: CONFIG_FILENAME,
     agentsPath: AGENTS_FILENAME,
-    modelsDir,
-    dataDir,
-    exampleModelPath: `${modelsDir}/${EXAMPLE_MODEL_FILENAME}`,
-    sampleDataPath: `${modelsDir}/${sampleTablePath}`,
-    sampleTablePath,
-    connectionName: spec.database === 'duckdb' ? DUCKDB_CONNECTION_NAME : WAREHOUSE_CONNECTION_NAME,
+    modelsDir: normalizeRelative(spec.modelsDir),
+    connectionName: spec.connectionName,
   };
 }
 
@@ -119,13 +96,12 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
   const config = renderMoraConfig({
     projectName: spec.projectName,
     modelsDir: paths.modelsDir,
-    database: spec.database,
-    duckdbConnectionName: DUCKDB_CONNECTION_NAME,
-    warehouseConnectionName: WAREHOUSE_CONNECTION_NAME,
-    warehouseSettings:
-      spec.database === 'duckdb'
-        ? undefined
-        : (spec.warehouseSettings ?? defaultWarehouseSettings(spec.database, paths.modelsDir)),
+    connection: {
+      name: spec.connectionName,
+      type: spec.database,
+      settings:
+        spec.connectionSettings ?? defaultConnectionSettings(spec.database, paths.modelsDir),
+    },
     cliVersion: CLI_VERSION,
   });
 
@@ -135,36 +111,18 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
     contents: config,
   });
 
-  if (spec.includeExample) {
-    files.push({
-      path: paths.sampleDataPath,
-      strategy: 'replace',
-      contents: SAMPLE_ORDERS_CSV,
-    });
-    files.push({
-      path: paths.exampleModelPath,
-      strategy: 'replace',
-      contents: renderExampleModel({
-        // The example always reads local CSV, so it stays on the DuckDB
-        // connection even when the project targets a warehouse.
-        connectionName: DUCKDB_CONNECTION_NAME,
-        tablePath: paths.sampleTablePath,
-      }),
-    });
-  } else {
-    files.push({
-      path: `${paths.modelsDir}/.gitkeep`,
-      strategy: 'replace',
-      contents: '',
-    });
-  }
+  // The models directory is the semantic layer, and it starts empty: what
+  // belongs in it is sources over the reader's own tables, which only they can
+  // write. Git needs the placeholder to carry an empty directory.
+  files.push({
+    path: `${paths.modelsDir}/.gitkeep`,
+    strategy: 'replace',
+    contents: '',
+  });
 
   const agentsDoc = renderAgentsDoc({
     projectName: spec.projectName,
     modelsDir: paths.modelsDir,
-    dataDir: paths.dataDir,
-    exampleModelPath: paths.exampleModelPath,
-    hasExample: spec.includeExample,
     agentDocsDir: AGENT_DOCS_DIR,
   });
 
@@ -180,7 +138,8 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
   files.push(
     ...buildAgentDocs({
       modelsDir: paths.modelsDir,
-      connectionName: DUCKDB_CONNECTION_NAME,
+      connectionName: spec.connectionName,
+      sampleTablePath: DATABASES[spec.database].sampleTable,
     }),
   );
 
@@ -220,6 +179,12 @@ export function buildAgentDocs(options: AgentDocsOptions): ScaffoldFile[] {
       contents: renderMalloyGuide(options),
     },
     {
+      path: `${AGENT_DOCS_DIR}/modeling.md`,
+      strategy: 'replace',
+      owned: true,
+      contents: renderModelingGuide(options),
+    },
+    {
       path: `${AGENT_DOCS_DIR}/mora.md`,
       strategy: 'replace',
       owned: true,
@@ -238,12 +203,87 @@ export function findConflicts(root: string, files: ScaffoldFile[]): string[] {
     .map((file) => file.path);
 }
 
-export async function writeScaffold(root: string, files: ScaffoldFile[]): Promise<WrittenFile[]> {
+/**
+ * What the project looked like before Mora touched it, kept so a run that
+ * cannot finish can leave the directory exactly as it found it. `init` refuses
+ * to leave a half-built project behind, and half-built is what a scaffold with
+ * an unreachable connection would be.
+ */
+export interface ScaffoldSnapshot {
+  root: string;
+  /** Prior contents of each file touched; undefined means it did not exist. */
+  files: Map<string, string | undefined>;
+  /** Directories Mora created, including the root when it made that too. */
+  createdDirs: string[];
+}
+
+export function createSnapshot(root: string): ScaffoldSnapshot {
+  return { root, files: new Map(), createdDirs: [] };
+}
+
+/**
+ * Remembers a file's current contents before anything writes to it. Recording
+ * twice keeps the first answer, which is the state Mora actually found.
+ */
+export async function recordFile(snapshot: ScaffoldSnapshot, relativePath: string): Promise<void> {
+  if (snapshot.files.has(relativePath)) return;
+  const absolute = path.join(snapshot.root, relativePath);
+  snapshot.files.set(
+    relativePath,
+    existsSync(absolute) ? await readFile(absolute, 'utf8') : undefined,
+  );
+}
+
+/** Creates a directory and its missing parents, noting which ones are new. */
+export async function ensureDirectory(
+  snapshot: ScaffoldSnapshot,
+  absoluteDir: string,
+): Promise<void> {
+  const missing: string[] = [];
+  for (let current = absoluteDir; !existsSync(current); current = path.dirname(current)) {
+    missing.push(current);
+    if (path.dirname(current) === current) break;
+  }
+  snapshot.createdDirs.push(...missing);
+  await mkdir(absoluteDir, { recursive: true });
+}
+
+/**
+ * Puts everything in the snapshot back: files Mora overwrote get their contents
+ * again, files it created are removed, and directories it created go with them
+ * once they are empty. A directory that has since gained a file of someone
+ * else's is left alone.
+ */
+export async function revertScaffold(snapshot: ScaffoldSnapshot): Promise<void> {
+  for (const [relativePath, previous] of snapshot.files) {
+    const absolute = path.join(snapshot.root, relativePath);
+    if (previous === undefined) {
+      await rm(absolute, { force: true });
+    } else {
+      await writeFile(absolute, previous, 'utf8');
+    }
+  }
+
+  // Deepest first, so a parent is only considered once its children are gone.
+  const deepestFirst = [...new Set(snapshot.createdDirs)].sort(
+    (a, b) => b.split(path.sep).length - a.split(path.sep).length,
+  );
+  for (const directory of deepestFirst) {
+    await rmdir(directory).catch(() => undefined);
+  }
+}
+
+export async function writeScaffold(
+  root: string,
+  files: ScaffoldFile[],
+  snapshot: ScaffoldSnapshot = createSnapshot(root),
+): Promise<{ written: WrittenFile[]; snapshot: ScaffoldSnapshot }> {
   const written: WrittenFile[] = [];
 
   for (const file of files) {
     const absolute = path.join(root, file.path);
-    await mkdir(path.dirname(absolute), { recursive: true });
+    await ensureDirectory(snapshot, path.dirname(absolute));
+    await recordFile(snapshot, file.path);
 
     if (file.strategy === 'merge-lines') {
       written.push(await mergeLines(absolute, file));
@@ -273,7 +313,7 @@ export async function writeScaffold(root: string, files: ScaffoldFile[]): Promis
     written.push({ path: file.path, action: 'overwritten' });
   }
 
-  return written;
+  return { written, snapshot };
 }
 
 /**

@@ -7,22 +7,29 @@ import { parse as parseYaml } from 'yaml';
 import { type InitFlags, type JoinReport, runInit } from '../src/commands/init.js';
 import { collectEnvVars, ENV_EXAMPLE_FILENAME, ENV_FILENAME, readEnvFile } from '../src/env.js';
 import { MANAGED_BEGIN, MANAGED_END } from '../src/scaffold.js';
+import { writeOrdersModel } from './helpers/fixtures.js';
 
 const PROJECT_VAR = 'GOOGLE_CLOUD_PROJECT';
 
 function flags(overrides: Partial<InitFlags> = {}): InitFlags {
-  // --no-test: these fixtures are about join behaviour, not warehouse reachability.
-  return { example: true, compile: true, json: true, yes: true, test: false, ...overrides };
+  // --no-test: these fixtures are about join behaviour, not reachability, and a
+  // failed connection would take the scaffold with it.
+  return { json: true, yes: true, test: false, ...overrides };
 }
 
 async function tempDir(prefix = 'mora-join-'): Promise<string> {
   return mkdtemp(path.join(tmpdir(), prefix));
 }
 
-/** A project as a head of data would leave it: scaffolded and committed. */
+/**
+ * A project as a head of data would leave it: scaffolded, modelled and
+ * committed. `init` writes no model itself, so the fixture supplies one — but
+ * only for DuckDB, since it reads a CSV no warehouse has.
+ */
 async function committedProject(database = 'duckdb'): Promise<string> {
   const root = await tempDir();
-  await runInit(root, flags({ db: database, name: 'retail', compile: false }));
+  await runInit(root, flags({ db: database, name: 'retail' }));
+  if (database === 'duckdb') await writeOrdersModel(root);
   // .env is gitignored; a clone does not have one until join creates it.
   await rm(path.join(root, ENV_FILENAME), { force: true });
   return root;
@@ -41,7 +48,7 @@ afterEach(() => {
 describe('init in a project that already exists', () => {
   it('joins the project instead of scaffolding over it', async () => {
     const root = await committedProject();
-    const before = await readFile(path.join(root, 'metrics/example.malloy'), 'utf8');
+    const before = await readFile(path.join(root, 'metrics/orders.malloy'), 'utf8');
     const config = await readFile(path.join(root, 'mora.yaml'), 'utf8');
 
     const report = await join(root);
@@ -51,7 +58,7 @@ describe('init in a project that already exists', () => {
     expect(report.project).toEqual({ name: 'retail', models: 'metrics' });
     expect(report.summary.passed).toBe(1);
     // Nothing the team committed may change.
-    await expect(readFile(path.join(root, 'metrics/example.malloy'), 'utf8')).resolves.toBe(before);
+    await expect(readFile(path.join(root, 'metrics/orders.malloy'), 'utf8')).resolves.toBe(before);
     await expect(readFile(path.join(root, 'mora.yaml'), 'utf8')).resolves.toBe(config);
   });
 
@@ -150,7 +157,7 @@ describe('init in a project that already exists', () => {
   it('scaffolds again when forced', async () => {
     const root = await committedProject();
 
-    const report = await runInit(root, flags({ force: true, compile: false }));
+    const report = await runInit(root, flags({ force: true }));
 
     expect(report.mode).toBe('scaffold');
   });
@@ -234,7 +241,7 @@ describe('committed artifacts', () => {
     const rule = 'Ask before renaming a measure.';
     await writeFile(agentsPath, `${await readFile(agentsPath, 'utf8')}\n${rule}\n`, 'utf8');
 
-    await runInit(root, flags({ force: true, compile: false, models: 'vocabulary' }));
+    await runInit(root, flags({ force: true, models: 'vocabulary' }));
 
     const updated = await readFile(agentsPath, 'utf8');
     expect(updated).toContain(rule);
@@ -257,12 +264,107 @@ describe('committed artifacts', () => {
       'utf8',
     );
 
-    await runInit(root, flags({ force: true, compile: false, name: 'retail' }));
+    await runInit(root, flags({ force: true, name: 'retail' }));
 
     const updated = await readFile(agentsPath, 'utf8');
     expect(updated.startsWith('# Working with the retail semantic layer')).toBe(true);
     expect(updated).not.toContain('an older, unheaded body');
     expect(updated.split(MANAGED_BEGIN)).toHaveLength(2);
+  });
+});
+
+describe('init is connection setup', () => {
+  it('opens the connection it just declared, and keeps the scaffold', async () => {
+    const root = await tempDir('mora-init-duckdb-');
+
+    const report = await runInit(root, { json: true, yes: true, name: 'retail', test: true });
+
+    expect(report.mode).toBe('scaffold');
+    if (report.mode !== 'scaffold') return;
+    expect(report.connection).toMatchObject({ name: 'duckdb', ok: true });
+    expect(report.rolledBack).toBe(false);
+    expect(report.ok).toBe(true);
+    // The semantic layer starts empty: what goes in it is the reader's tables.
+    expect(existsSync(path.join(root, 'metrics/.gitkeep'))).toBe(true);
+    expect(report.files.some((file) => file.path.endsWith('.malloy'))).toBe(false);
+  });
+
+  it('names the connection after the database, or after --connection', async () => {
+    const byDefault = await tempDir('mora-init-name-');
+    const named = await tempDir('mora-init-named-');
+
+    const first = await runInit(byDefault, flags({ name: 'retail' }));
+    const second = await runInit(named, flags({ name: 'retail', connection: 'lake' }));
+
+    expect(first.mode === 'scaffold' && first.project.connection).toBe('duckdb');
+    expect(second.mode === 'scaffold' && second.project.connection).toBe('lake');
+    await expect(readFile(path.join(named, 'mora.yaml'), 'utf8')).resolves.toContain(
+      'default_connection: lake',
+    );
+  });
+
+  it('refuses a connection name a model could not refer to', async () => {
+    const root = await tempDir('mora-init-badname-');
+
+    await expect(runInit(root, flags({ connection: 'my warehouse' }))).rejects.toMatchObject({
+      code: 'invalid-connection-name',
+    });
+  });
+
+  it('takes the whole scaffold back when the credential it needs is unset', async () => {
+    vi.stubEnv(PROJECT_VAR, undefined);
+    const root = await tempDir('mora-init-rollback-');
+
+    const report = await runInit(root, { json: true, yes: true, db: 'bigquery', test: true });
+
+    expect(report.mode).toBe('scaffold');
+    if (report.mode !== 'scaffold') return;
+    expect(report.ok).toBe(false);
+    expect(report.rolledBack).toBe(true);
+    // Nothing half-written to clean up, including the .env the credential would
+    // have gone into.
+    expect(report.files).toEqual([]);
+    expect(existsSync(path.join(root, 'mora.yaml'))).toBe(false);
+    expect(existsSync(path.join(root, ENV_FILENAME))).toBe(false);
+    expect(existsSync(path.join(root, 'metrics'))).toBe(false);
+    expect(report.nextSteps[0]).toContain(PROJECT_VAR);
+  });
+
+  it('gives back a file --force would have overwritten', async () => {
+    vi.stubEnv(PROJECT_VAR, undefined);
+    const root = await committedProject();
+    const agentsPath = path.join(root, 'AGENTS.md');
+    const before = await readFile(agentsPath, 'utf8');
+
+    const report = await runInit(root, {
+      json: true,
+      yes: true,
+      force: true,
+      db: 'bigquery',
+      test: true,
+    });
+
+    expect(report.mode === 'scaffold' && report.rolledBack).toBe(true);
+    await expect(readFile(agentsPath, 'utf8')).resolves.toBe(before);
+    await expect(readFile(path.join(root, 'mora.yaml'), 'utf8')).resolves.toContain(
+      'default_connection: duckdb',
+    );
+  });
+
+  it('keeps the scaffold under --no-test, for a credential that comes later', async () => {
+    vi.stubEnv(PROJECT_VAR, undefined);
+    const root = await tempDir('mora-init-notest-');
+
+    const report = await runInit(root, flags({ db: 'bigquery' }));
+
+    expect(report.mode).toBe('scaffold');
+    if (report.mode !== 'scaffold') return;
+    expect(report.rolledBack).toBe(false);
+    expect(report.connection).toBeNull();
+    // Not ok: the credential is still unset, and the report says so rather than
+    // pretending the project is ready.
+    expect(report.ok).toBe(false);
+    expect(existsSync(path.join(root, 'mora.yaml'))).toBe(true);
   });
 });
 
@@ -276,7 +378,7 @@ describe('init scaffolds a warehouse', () => {
       flags({
         db: 'bigquery',
         name: 'retail',
-        compile: false,
+        connection: 'warehouse',
         projectId: 'acme-prod',
         location: 'EU',
       }),
@@ -286,9 +388,10 @@ describe('init scaffolds a warehouse', () => {
     if (report.mode !== 'scaffold') return;
 
     const config = parseYaml(await readFile(path.join(root, 'mora.yaml'), 'utf8')) as {
-      connections: { warehouse: Record<string, string>; default: string };
+      project: { default_connection: string };
+      connections: { warehouse: Record<string, string> };
     };
-    expect(config.connections.default).toBe('warehouse');
+    expect(config.project.default_connection).toBe('warehouse');
     expect(config.connections.warehouse).toMatchObject({
       type: 'bigquery',
       project_id: 'acme-prod',
@@ -310,7 +413,6 @@ describe('init scaffolds a warehouse', () => {
       flags({
         db: 'bigquery',
         name: 'retail',
-        compile: false,
         projectId: projectRef,
       }),
     );
@@ -327,10 +429,7 @@ describe('init scaffolds a warehouse', () => {
     vi.stubEnv(PROJECT_VAR, 'acme-from-shell');
     const root = await tempDir('mora-init-bq-skip-');
 
-    const report = await runInit(
-      root,
-      flags({ db: 'bigquery', name: 'retail', compile: false, test: false }),
-    );
+    const report = await runInit(root, flags({ db: 'bigquery', name: 'retail', test: false }));
 
     expect(report.mode).toBe('scaffold');
     if (report.mode !== 'scaffold') return;
@@ -346,12 +445,11 @@ describe.skipIf(!bigqueryProject)('init against a real BigQuery project', () => 
     const root = await tempDir('mora-init-bq-live-');
 
     const report = await runInit(root, {
-      example: true,
-      compile: false,
       json: true,
       yes: true,
       db: 'bigquery',
       name: 'retail',
+      connection: 'warehouse',
       projectId: bigqueryProject,
       test: true,
     });

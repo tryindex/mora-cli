@@ -10,18 +10,24 @@ import {
   type Vocabulary,
 } from '../src/malloy/describe.js';
 import { buildScaffold, type ScaffoldSpec, writeScaffold } from '../src/scaffold.js';
+import { writeOrdersModel } from './helpers/fixtures.js';
 
 const spec: ScaffoldSpec = {
   root: '',
   projectName: 'analytics',
   database: 'duckdb',
   modelsDir: 'metrics',
-  includeExample: true,
+  connectionName: 'duckdb',
 };
 
-async function scaffoldProject(overrides: Partial<ScaffoldSpec> = {}): Promise<string> {
+/** A scaffold plus the orders fixture: `init` itself writes no model. */
+async function scaffoldProject(
+  options: { withModel?: boolean } & Partial<ScaffoldSpec> = {},
+): Promise<string> {
+  const { withModel = true, ...overrides } = options;
   const root = await mkdtemp(path.join(tmpdir(), 'mora-describe-'));
   await writeScaffold(root, buildScaffold({ ...spec, ...overrides, root }));
+  if (withModel) await writeOrdersModel(root);
   return root;
 }
 
@@ -42,7 +48,7 @@ function source(report: DescribeReport, name: string) {
 }
 
 describe('runDescribe', () => {
-  it('reads the vocabulary out of the scaffolded example', async () => {
+  it('reads the vocabulary out of the models on disk', async () => {
     const root = await scaffoldProject();
 
     const report = await runDescribe(root, undefined, { json: true });
@@ -53,7 +59,7 @@ describe('runDescribe', () => {
     expect(report.project).toEqual({ name: 'analytics', models: 'metrics' });
 
     const orders = source(report, 'orders');
-    expect(orders.model).toBe('metrics/example.malloy');
+    expect(orders.model).toBe('metrics/orders.malloy');
     // An aggregate is a measure; a row-level attribute is a dimension. That
     // split is the whole point of the listing.
     expect(names(orders.measures)).toContain('revenue');

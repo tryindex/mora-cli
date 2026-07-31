@@ -256,19 +256,21 @@ export async function runPluginAdd(
   const toWrite = setup.files.filter((file) => !keep.includes(file.path));
 
   const files: PluginWrittenFile[] = [
-    ...(await writeScaffold(config.root, toWrite)),
+    ...(await writeScaffold(config.root, toWrite)).written,
     ...keep.map((path): PluginWrittenFile => ({ path, action: 'kept' })),
   ];
 
   if (setup.gitignore && setup.gitignore.length > 0) {
     files.push(
-      ...(await writeScaffold(config.root, [
-        {
-          path: '.gitignore',
-          strategy: 'merge-lines',
-          contents: `${setup.gitignore.join('\n')}\n`,
-        },
-      ])),
+      ...(
+        await writeScaffold(config.root, [
+          {
+            path: '.gitignore',
+            strategy: 'merge-lines',
+            contents: `${setup.gitignore.join('\n')}\n`,
+          },
+        ])
+      ).written,
     );
   }
 

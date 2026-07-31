@@ -1,9 +1,6 @@
 export interface AgentsDocOptions {
   projectName: string;
   modelsDir: string;
-  dataDir: string;
-  exampleModelPath: string;
-  hasExample: boolean;
   /** Where Mora keeps the docs it owns, e.g. `.agents`. */
   agentDocsDir: string;
   /** Layout notes contributed by the plugins the project has added. */
@@ -44,18 +41,13 @@ who to ask before changing one that is already in use.
 `;
 
 function renderManaged(options: AgentsDocOptions): string {
-  const { modelsDir, dataDir, exampleModelPath, hasExample, agentDocsDir, pluginNotes } = options;
+  const { modelsDir, agentDocsDir, pluginNotes } = options;
 
   const layout = [
     '- `mora.yaml` - project config: model directory and database connections.',
     `- \`${modelsDir}/\` - Malloy models. This is the semantic layer.`,
-    ...(hasExample
-      ? [
-          `- \`${exampleModelPath}\` - worked example: one source with dimensions, measures and views.`,
-          `- \`${dataDir}/\` - sample data backing the example model.`,
-        ]
-      : []),
     `- \`${agentDocsDir}/malloy.md\` - how to write Malloy in this project.`,
+    `- \`${agentDocsDir}/modeling.md\` - how to propose a model for tables not covered yet.`,
     `- \`${agentDocsDir}/mora.md\` - the \`mora\` commands, their flags and output.`,
     ...(pluginNotes ?? []),
   ].join('\n');
@@ -80,22 +72,27 @@ so an answer is reviewable by reading a few lines of Malloy.
    \`${modelsDir}/\` as a named dimension, measure or view, with a \`#"\` doc
    string saying what it means, then query it. Do not inline the logic into a
    one-off query and leave it there.
-3. Never bypass the semantic layer with raw SQL against the warehouse. If you
+3. If the question is about a table no model describes, run \`mora schema\` to
+   see what the warehouse holds and follow \`${agentDocsDir}/modeling.md\`. Agree
+   the scope with a human before writing sources.
+4. Never bypass the semantic layer with raw SQL against the warehouse. If you
    believe raw SQL is unavoidable, say so and explain why.
-4. After editing any \`.malloy\` file, run \`mora validate\` before reporting
+5. After editing any \`.malloy\` file, run \`mora validate\` before reporting
    results.
-5. Definitions are shared. Changing an existing measure changes every answer
+6. Definitions are shared. Changing an existing measure changes every answer
    that uses it, so prefer adding a new one over redefining.
-6. Report the SQL or the definitions behind every number, so a human can audit
+7. Report the SQL or the definitions behind every number, so a human can audit
    how the answer was produced.
 
 ## Required reading
 
-These two files are Mora's own reference. They are kept current by the CLI, so
-read them rather than guessing:
+These files are Mora's own reference. They are kept current by the CLI, so read
+them rather than guessing:
 
 - Read \`${agentDocsDir}/malloy.md\` before editing a \`.malloy\` file.
 - Read \`${agentDocsDir}/mora.md\` before running a \`mora\` command.
+- Read \`${agentDocsDir}/modeling.md\` before proposing a model for a table the
+  semantic layer does not cover yet.
 
 ## Layout
 

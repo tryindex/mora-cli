@@ -1,16 +1,21 @@
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import * as prompts from '@clack/prompts';
 import type { Command } from 'commander';
 import pc from 'picocolors';
 import { loadConfig, type MoraConfig } from '../config.js';
 import {
+  assertConnectionName,
+  CONNECTION_NAME_PATTERN,
+  suggestConnectionName,
+} from '../connections.js';
+import {
   connectionSettings,
   DATABASE_IDS,
   DATABASES,
   type DatabaseId,
-  defaultWarehouseSettings,
+  defaultConnectionSettings,
   isDatabaseId,
 } from '../databases.js';
 import {
@@ -22,19 +27,19 @@ import {
   writeEnvValues,
 } from '../env.js';
 import { ExitCode, MoraError } from '../errors.js';
-import { type CompileResult, compileModel } from '../malloy/compile.js';
 import { isPluginInstalled } from '../plugins/loader.js';
 import { isBuiltInPlugin } from '../plugins/registry.js';
 import {
   assertConfigParses,
   buildScaffold,
   CONFIG_FILENAME,
-  DUCKDB_CONNECTION_NAME,
   findConflicts,
   normalizeRelative,
+  recordFile,
   resolvePaths,
+  revertScaffold,
+  type ScaffoldSnapshot,
   type ScaffoldSpec,
-  WAREHOUSE_CONNECTION_NAME,
   type WrittenFile,
   writeScaffold,
 } from '../scaffold.js';
@@ -61,13 +66,12 @@ const WAREHOUSE_IDS = DATABASE_IDS.filter((id) => id !== 'duckdb');
 export interface InitFlags extends SettingFlags {
   name?: string;
   db?: string;
+  connection?: string;
   models?: string;
-  example: boolean;
   yes?: boolean;
   force?: boolean;
   json?: boolean;
-  compile: boolean;
-  /** Connectivity check for the chosen warehouse; defaults to true. */
+  /** Connectivity check for the new connection; defaults to true. */
   test?: boolean;
 }
 
@@ -80,13 +84,18 @@ export interface ScaffoldReport {
     name: string;
     database: DatabaseId;
     models: string;
-    example: boolean;
+    connection: string;
   };
+  /** Empty after a rollback: nothing Mora wrote is still on disk. */
   files: WrittenFile[];
-  compile: CompileResult;
-  /** Variables the warehouse connection needs that are not set yet. */
+  /**
+   * Whether the scaffold was taken back off disk because its connection could
+   * not be opened. An agent should read this before assuming a project exists.
+   */
+  rolledBack: boolean;
+  /** Variables the connection needs that are not set yet. */
   missingEnvVars: string[];
-  /** The warehouse connectivity check, or null when it was not run. */
+  /** The connectivity check, or null when `--no-test` skipped it. */
   connection: ConnectionTestResult | null;
   nextSteps: string[];
 }
@@ -131,12 +140,11 @@ export function registerInitCommand(program: Command): void {
     .argument('[directory]', 'directory to initialize', '.')
     .option('-n, --name <name>', 'project name')
     .option('-d, --db <database>', `data source (${DATABASE_IDS.join(', ')})`)
+    .option('--connection <name>', 'name models will use for it (default: the database)')
     .option('-m, --models <dir>', `directory for Malloy models (default: ${DEFAULT_MODELS_DIR})`)
-    .option('--no-example', 'skip the example model and its sample data')
     .option('-y, --yes', 'accept defaults without prompting')
     .option('-f, --force', 'overwrite existing files')
-    .option('--no-compile', 'skip the Malloy compile check')
-    .option('--no-test', 'skip the warehouse connectivity check')
+    .option('--no-test', 'keep the scaffold without checking the connection')
     .option('--json', 'print a machine-readable result instead of prose');
 
   // One flag per warehouse setting so init can finish setup unattended. DuckDB's
@@ -154,26 +162,32 @@ export function registerInitCommand(program: Command): void {
       'after',
       `
 Two modes:
-  In a directory without ${CONFIG_FILENAME}, init scaffolds a new semantic layer. In a
+  In a directory without ${CONFIG_FILENAME}, init scaffolds a new semantic layer: one
+  connection, an empty models directory, and the docs your agent reads. In a
   directory that already has one, it joins that project instead: it creates a local
   ${ENV_FILENAME} from ${ENV_EXAMPLE_FILENAME}, reports which credentials are still
   missing, notes when \`mora upgrade\` (or a newer CLI) is needed, and compiles the
   committed models. Nothing the team owns is changed. That is what a teammate runs
   after cloning. Pass --force to scaffold over an existing project.
 
-  Choosing a warehouse interactively prompts for its settings, writes credential
-  values into ${ENV_FILENAME}, and tests the connection so you leave ready to query.
+  Setting up interactively prompts for the connection's settings, writes credential
+  values into ${ENV_FILENAME}, and opens the connection so you leave ready to query.
   Pass the same settings as flags (e.g. --project-id) to do that unattended.
 
+  A scaffold whose connection does not answer is removed again, leaving the
+  directory as it was found: fix the setting or the credential and run init again.
+  Pass --no-test to keep the scaffold without checking.
+
 Agent usage:
-  Pass --yes (or --json) to run without prompts. Exit codes: ${ExitCode.ok} success,
-  ${ExitCode.failure} failure, ${ExitCode.usage} bad usage, ${ExitCode.conflict} refused because files already exist.
+  Pass --yes (or --json) to run without prompts. Read \`rolledBack\` before assuming
+  a project exists. Exit codes: ${ExitCode.ok} success, ${ExitCode.failure} failure,
+  ${ExitCode.usage} bad usage, ${ExitCode.conflict} refused because files already exist.
 
 Examples:
   $ mora init
   $ mora init ./analytics --db duckdb --yes
   $ mora init --db bigquery --project-id '\${GOOGLE_CLOUD_PROJECT}' --yes
-  $ mora init --name retail --models models --json`,
+  $ mora init --db bigquery --connection warehouse --no-test --json`,
     )
     .action(async (directory: string, flags: InitFlags) => {
       const report = await runInit(directory, flags);
@@ -221,22 +235,21 @@ async function runScaffold(
     });
   }
 
-  await mkdir(root, { recursive: true });
-  const written = await writeScaffold(root, files);
+  const { written, snapshot } = await writeScaffold(root, files);
   await assertConfigParses(root);
 
   const paths = resolvePaths(spec);
-  const compile = await runCompileCheck({ spec, root, interactive, flags });
 
-  const envSetup = await setupWarehouseCredentials({
+  const envSetup = await setupCredentials({
     root,
     spec,
     interactive,
     projectName: spec.projectName,
+    snapshot,
   });
   if (envSetup.file) written.push(envSetup.file);
 
-  const connection = await maybeTestWarehouse({
+  const connection = await testNewConnection({
     root,
     spec,
     flags,
@@ -244,11 +257,18 @@ async function runScaffold(
     prose: interactive,
   });
 
+  // A project whose one connection cannot be opened is not a project yet, and
+  // leaving the files behind would mean the next command fails on something the
+  // reader did not choose to keep. `--no-test` is how someone says they will
+  // supply the credential later and wants the files regardless.
+  const kept =
+    flags.test === false || (envSetup.missingEnvVars.length === 0 && connection?.ok === true);
+  if (!kept) {
+    await revertScaffold(snapshot);
+  }
+
   const report: ScaffoldReport = {
-    ok:
-      compile.status !== 'failed' &&
-      envSetup.missingEnvVars.length === 0 &&
-      (connection === null || connection.ok),
+    ok: kept && envSetup.missingEnvVars.length === 0,
     command: 'init',
     mode: 'scaffold',
     root,
@@ -256,13 +276,13 @@ async function runScaffold(
       name: spec.projectName,
       database: spec.database,
       models: paths.modelsDir,
-      example: spec.includeExample,
+      connection: spec.connectionName,
     },
-    files: written,
-    compile,
+    files: kept ? written : [],
+    rolledBack: !kept,
     missingEnvVars: envSetup.missingEnvVars,
     connection,
-    nextSteps: nextSteps(spec, paths.exampleModelPath, envSetup.missingEnvVars, connection),
+    nextSteps: nextSteps(spec, envSetup.missingEnvVars, connection, kept),
   };
 
   if (interactive) {
@@ -277,13 +297,14 @@ async function runScaffold(
  * fills in any `${VAR}` the warehouse still cannot resolve. Non-interactive
  * runs leave values unset so an agent can write them itself.
  */
-async function setupWarehouseCredentials(context: {
+async function setupCredentials(context: {
   root: string;
   spec: ScaffoldSpec;
   interactive: boolean;
   projectName: string;
+  snapshot: ScaffoldSnapshot;
 }): Promise<{ file?: WrittenFile; missingEnvVars: string[] }> {
-  const { root, spec, interactive, projectName } = context;
+  const { root, spec, interactive, projectName, snapshot } = context;
   if (!DATABASES[spec.database].needsCredentials) {
     return { missingEnvVars: [] };
   }
@@ -291,6 +312,10 @@ async function setupWarehouseCredentials(context: {
   const config = await loadConfig(root);
   const envPath = path.join(root, ENV_FILENAME);
   let file: WrittenFile | undefined;
+
+  // Registered before the first write, so a rollback takes the values typed
+  // here with it rather than leaving credentials in a directory with no project.
+  await recordFile(snapshot, ENV_FILENAME);
 
   if (config.requiredEnvVars.length > 0 && !existsSync(envPath)) {
     const example = path.join(root, ENV_EXAMPLE_FILENAME);
@@ -341,7 +366,12 @@ async function promptEnvValues(names: string[]): Promise<Record<string, string>>
   return values;
 }
 
-async function maybeTestWarehouse(context: {
+/**
+ * Opens the connection init just declared. This is the whole check now: there
+ * is no model to compile, and a semantic layer that cannot reach its database
+ * is not worth leaving on disk.
+ */
+async function testNewConnection(context: {
   root: string;
   spec: ScaffoldSpec;
   flags: InitFlags;
@@ -349,12 +379,14 @@ async function maybeTestWarehouse(context: {
   prose: boolean;
 }): Promise<ConnectionTestResult | null> {
   const { root, spec, flags, missingEnvVars, prose } = context;
-  if (flags.test === false || !DATABASES[spec.database].needsCredentials) return null;
+  if (flags.test === false) return null;
+  // An unset credential is already reported by name, and the driver would only
+  // say the same thing less clearly. The scaffold still goes back.
   if (missingEnvVars.length > 0) return null;
 
   const config = await loadConfig(root);
   const connection = config.connections.find(
-    (entry) => entry.name === WAREHOUSE_CONNECTION_NAME && entry.supported,
+    (entry) => entry.name === spec.connectionName && entry.supported,
   );
   if (!connection?.supported) return null;
 
@@ -602,53 +634,6 @@ function environmentLines(environment: EnvironmentReport): string[] {
   });
 }
 
-async function runCompileCheck(context: {
-  spec: ScaffoldSpec;
-  root: string;
-  interactive: boolean;
-  flags: InitFlags;
-}): Promise<CompileResult> {
-  const { spec, root, interactive, flags } = context;
-  const paths = resolvePaths(spec);
-
-  if (!flags.compile) {
-    return { status: 'skipped', reason: 'disabled with --no-compile' };
-  }
-  if (!spec.includeExample) {
-    return { status: 'skipped', reason: 'no example model to compile' };
-  }
-
-  const spinner = interactive ? prompts.spinner() : undefined;
-  spinner?.start('Compiling the example model');
-
-  // The example always reads local CSV through the scaffolded DuckDB
-  // connection, whatever else the project is configured to talk to.
-  const result = await compileModel({
-    modelPath: path.join(root, paths.exampleModelPath),
-    connections: [
-      {
-        name: DUCKDB_CONNECTION_NAME,
-        type: 'duckdb',
-        supported: true,
-        requiredEnvVars: [],
-        database: ':memory:',
-        workingDirectory: path.join(root, paths.modelsDir),
-      },
-    ],
-    defaultConnectionName: DUCKDB_CONNECTION_NAME,
-  });
-
-  if (spinner) {
-    if (result.status === 'failed') {
-      spinner.error('Example model failed to compile');
-    } else {
-      spinner.stop(result.status === 'passed' ? 'Example model compiles' : 'Compile check skipped');
-    }
-  }
-
-  return result;
-}
-
 function isInteractive(flags: InitFlags): boolean {
   if (flags.json || flags.yes) return false;
   // Agents and CI runners get a terminal often enough that isTTY alone is not a
@@ -665,18 +650,24 @@ function specFromFlags(root: string, flags: InitFlags): ScaffoldSpec {
     projectName: validateProjectName(flags.name ?? defaultProjectName(root)),
     database,
     modelsDir,
-    includeExample: flags.example,
-    warehouseSettings:
-      database === 'duckdb' ? undefined : warehouseSettingsFromFlags(database, modelsDir, flags),
+    connectionName: connectionNameFromFlag(flags.connection, database),
+    connectionSettings: settingsFromFlags(database, modelsDir, flags),
   };
 }
 
-function warehouseSettingsFromFlags(
-  database: Exclude<DatabaseId, 'duckdb'>,
+function connectionNameFromFlag(given: string | undefined, database: DatabaseId): string {
+  if (given === undefined) return suggestConnectionName(database, []);
+  const name = given.trim();
+  assertConnectionName(name);
+  return name;
+}
+
+function settingsFromFlags(
+  database: DatabaseId,
   modelsDir: string,
   flags: SettingFlags,
 ): Record<string, string> {
-  const settings = defaultWarehouseSettings(database, modelsDir);
+  const settings = defaultConnectionSettings(database, modelsDir);
   for (const setting of connectionSettings(database, { modelsDir })) {
     const fromFlag = flagValue(flags, setting);
     if (fromFlag !== undefined) settings[setting.key] = fromFlag;
@@ -718,31 +709,34 @@ async function promptForSpec(root: string, flags: InitFlags): Promise<ScaffoldSp
   // different one.
   const modelsDir = validateModelsDir(flags.models ?? DEFAULT_MODELS_DIR);
 
-  let warehouseSettings: Record<string, string> | undefined;
-  if (DATABASES[database].needsCredentials && database !== 'duckdb') {
-    prompts.log.info(
-      `The example model stays on DuckDB so you have something that works right away.\n` +
-        `${DATABASES[database].label} settings go into ${CONFIG_FILENAME}; secrets belong in ${ENV_FILENAME}.`,
-    );
-    warehouseSettings = await chooseSettings(database, { modelsDir }, flags, true);
-  }
+  const connectionName =
+    flags.connection?.trim() ||
+    (await ask(
+      prompts.text({
+        message: 'Name models will use for it',
+        placeholder: suggestConnectionName(database, []),
+        defaultValue: suggestConnectionName(database, []),
+        validate: (value) =>
+          !value || CONNECTION_NAME_PATTERN.test(value.trim())
+            ? undefined
+            : 'A connection name must start with a letter or underscore and contain only letters, digits and underscores.',
+      }),
+    ));
 
-  const includeExample = flags.example
-    ? await ask(
-        prompts.confirm({
-          message: 'Include an example model with sample data?',
-          initialValue: true,
-        }),
-      )
-    : false;
+  if (DATABASES[database].needsCredentials) {
+    prompts.log.info(
+      `${DATABASES[database].label} settings go into ${CONFIG_FILENAME}; secrets belong in ${ENV_FILENAME}.`,
+    );
+  }
+  const settings = await chooseSettings(database, { modelsDir }, flags, true);
 
   return {
     root,
     projectName: validateProjectName(projectName),
     database,
     modelsDir,
-    includeExample,
-    warehouseSettings,
+    connectionName: connectionNameFromFlag(connectionName, database),
+    connectionSettings: settings,
   };
 }
 
@@ -804,34 +798,39 @@ function defaultProjectName(root: string): string {
 
 function nextSteps(
   spec: ScaffoldSpec,
-  exampleModelPath: string,
   missingEnvVars: string[],
   connection: ConnectionTestResult | null,
+  kept: boolean,
 ): string[] {
   const steps: string[] = [];
-  if (spec.includeExample) {
-    steps.push(`Read ${exampleModelPath} to see how sources, measures and views fit together.`);
-    steps.push('Run `mora describe` to list the vocabulary, then `mora query monthly_revenue`.');
-  }
+
   if (missingEnvVars.length > 0) {
+    // After a rollback there is no .env left to edit, so say where the value
+    // goes rather than naming a file the reader will not find.
     steps.push(
-      `Set ${missingEnvVars.join(', ')} in ${ENV_FILENAME}, then run \`mora connection test ${WAREHOUSE_CONNECTION_NAME}\`.`,
+      kept
+        ? `Set ${missingEnvVars.join(', ')} in ${ENV_FILENAME}, then run \`mora connection test ${spec.connectionName}\`.`
+        : `Set ${missingEnvVars.join(', ')} in your environment, then run \`mora init\` again.`,
     );
-  } else if (connection && !connection.ok) {
-    steps.push(
-      `Fix the ${spec.database} connection settings or your credentials, then run \`mora connection test ${WAREHOUSE_CONNECTION_NAME}\`.`,
-    );
-    steps.push(...gcloudAuthStep(spec.database, spec.warehouseSettings ?? {}));
-  } else if (DATABASES[spec.database].needsCredentials && connection?.ok) {
-    steps.push(
-      `Add a source over your warehouse tables: \`source: my_table is ${WAREHOUSE_CONNECTION_NAME}.table('dataset.my_table')\`.`,
-    );
+    if (kept) return steps;
   }
+
+  if (connection && !connection.ok) {
+    steps.push(
+      `Fix the ${spec.database} connection settings or your credentials, then run \`mora init\` again.`,
+    );
+    steps.push(...gcloudAuthStep(spec.database, spec.connectionSettings ?? {}));
+  }
+
+  if (!kept) return steps;
+
   steps.push(
-    spec.includeExample
-      ? `Replace the example with sources over your own tables in ${spec.modelsDir}/.`
-      : `Add sources over your own tables in ${spec.modelsDir}/.`,
+    `Run \`mora schema\` to see what ${spec.connectionName} can read, then add sources over those tables in ${spec.modelsDir}/.`,
   );
+  steps.push(
+    `Read .agents/modeling.md before writing the first one: \`source: orders is ${spec.connectionName}.table('${DATABASES[spec.database].sampleTable}')\`.`,
+  );
+  steps.push('Run `mora validate` after every model edit, and before opening a pull request.');
   steps.push('Point your agent at AGENTS.md so it queries through the semantic layer.');
   steps.push(
     'Run `mora plugin add publisher` when these models should also be served over ' +
@@ -841,26 +840,34 @@ function nextSteps(
 }
 
 function reportInteractive(report: ScaffoldReport, directory: string): void {
-  const lines = report.files.map((file) => `${actionLabel(file.action)} ${file.path}`);
-  prompts.note(lines.join('\n'), 'Files');
+  const location = directory === '.' ? 'this directory' : directory;
 
-  if (report.compile.status === 'passed') {
-    const sources = report.compile.sources ?? [];
-    const queries = report.compile.queries ?? [];
-    prompts.log.success(
-      `Semantic layer is valid: ${count(sources.length, 'source')}, ${count(queries.length, 'named query', 'named queries')}.`,
-    );
-    if (queries.length > 0) {
-      prompts.log.message(pc.dim(`Queries: ${queries.join(', ')}`));
+  if (report.rolledBack) {
+    if (report.connection && !report.connection.ok) {
+      prompts.log.error(`${report.connection.name}\n${report.connection.error ?? 'unknown error'}`);
+    } else if (report.missingEnvVars.length > 0) {
+      prompts.log.error(
+        `${report.missingEnvVars.join(', ')} ${
+          report.missingEnvVars.length === 1 ? 'is' : 'are'
+        } not set, so ${report.project.connection} cannot be opened.`,
+      );
     }
-  } else if (report.compile.status === 'failed') {
-    prompts.log.error(
-      `The example model did not compile:\n${report.compile.error ?? 'unknown error'}`,
+    prompts.note(report.nextSteps.map((step, i) => `${i + 1}. ${step}`).join('\n'), 'Next');
+    prompts.outro(
+      pc.yellow(
+        `Nothing was written: ${location} is exactly as Mora found it. Run \`mora init\` again once that is fixed.`,
+      ),
     );
-  } else if (report.compile.reason) {
-    prompts.log.warn(`Compile check skipped: ${report.compile.reason}`);
+    return;
   }
 
+  prompts.note(
+    report.files.map((file) => `${actionLabel(file.action)} ${file.path}`).join('\n'),
+    'Files',
+  );
+
+  // The spinner has already said the connection answered; saying it again here
+  // is the same sentence twice.
   if (report.missingEnvVars.length > 0) {
     prompts.log.warn(
       `${report.missingEnvVars.join(', ')} ${
@@ -868,31 +875,19 @@ function reportInteractive(report: ScaffoldReport, directory: string): void {
       } not set.`,
     );
   }
-  if (report.connection && !report.connection.ok) {
-    prompts.log.error(`${report.connection.name}\n${report.connection.error ?? 'unknown error'}`);
-  }
 
   prompts.note(report.nextSteps.map((step, i) => `${i + 1}. ${step}`).join('\n'), 'Next');
 
-  const location = directory === '.' ? 'this directory' : directory;
   if (report.ok) {
-    const warehouse =
-      report.connection?.ok === true ? ` ${pc.cyan(report.connection.name)} is reachable.` : '';
-    prompts.outro(`Semantic layer ready in ${pc.cyan(location)}.${warehouse}`);
+    prompts.outro(
+      `Semantic layer ready in ${pc.cyan(location)}. ${pc.dim('It has no models yet.')}`,
+    );
     return;
   }
 
-  const reasons: string[] = [];
-  if (report.compile.status === 'failed') reasons.push('the example failed to compile');
-  if (report.missingEnvVars.length > 0) {
-    reasons.push(`${count(report.missingEnvVars.length, 'credential')} still to set`);
-  }
-  if (report.connection && !report.connection.ok) {
-    reasons.push(`${report.connection.name} is not reachable yet`);
-  }
   prompts.outro(
     pc.yellow(
-      `Scaffold written to ${location}${reasons.length > 0 ? `, but ${reasons.join(' and ')}` : ''}.`,
+      `Scaffold written to ${location}, but ${count(report.missingEnvVars.length, 'credential')} still to set.`,
     ),
   );
 }

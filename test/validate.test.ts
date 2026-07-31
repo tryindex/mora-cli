@@ -6,20 +6,28 @@ import { runValidate } from '../src/commands/validate.js';
 import { loadConfig, parseConfig, resolveDefaultConnection } from '../src/config.js';
 import { MoraError } from '../src/errors.js';
 import { buildScaffold, type ScaffoldSpec, writeScaffold } from '../src/scaffold.js';
+import { ORDERS_MODEL_FILENAME, writeOrdersModel } from './helpers/fixtures.js';
 
 const spec: ScaffoldSpec = {
   root: '',
   projectName: 'analytics',
   database: 'duckdb',
   modelsDir: 'metrics',
-  includeExample: true,
+  connectionName: 'duckdb',
 };
 
-async function scaffoldProject(overrides: Partial<ScaffoldSpec> = {}): Promise<string> {
+/** A scaffold plus the orders fixture: `init` itself writes no model. */
+async function scaffoldProject(
+  options: { withModel?: boolean } & Partial<ScaffoldSpec> = {},
+): Promise<string> {
+  const { withModel = true, ...overrides } = options;
   const root = await mkdtemp(path.join(tmpdir(), 'mora-validate-'));
   await writeScaffold(root, buildScaffold({ ...spec, ...overrides, root }));
+  if (withModel) await writeOrdersModel(root);
   return root;
 }
+
+const MODEL = `metrics/${ORDERS_MODEL_FILENAME}`;
 
 /** Written as an escape so it stays a literal `${...}` reference, not interpolation. */
 const PROJECT_REF = '\u0024{GOOGLE_CLOUD_PROJECT}';
@@ -43,7 +51,7 @@ describe('runValidate', () => {
     expect(report.connection).toBe('duckdb');
     expect(report.project).toEqual({ name: 'analytics', models: 'metrics' });
     expect(report.summary).toEqual({ total: 1, passed: 1, failed: 0, skipped: 0 });
-    expect(report.models[0]?.path).toBe('metrics/example.malloy');
+    expect(report.models[0]?.path).toBe(MODEL);
     expect(report.models[0]?.sources).toContain('orders');
     expect(report.models[0]?.queries).toContain('monthly_revenue');
   });
@@ -51,7 +59,7 @@ describe('runValidate', () => {
   it('reports a broken model as failed without throwing', async () => {
     const root = await scaffoldProject();
     await writeFile(
-      path.join(root, 'metrics/example.malloy'),
+      path.join(root, MODEL),
       model('orders', '  measure: revenue is no_such_column.sum()'),
       'utf8',
     );
@@ -81,7 +89,7 @@ describe('runValidate', () => {
 
     expect(report.models.map((m) => m.path)).toEqual([
       'metrics/broken.malloy',
-      'metrics/example.malloy',
+      MODEL,
       'metrics/revenue.malloy',
     ]);
     expect(report.summary).toEqual({ total: 3, passed: 2, failed: 1, skipped: 0 });
@@ -103,14 +111,11 @@ describe('runValidate', () => {
 
     const report = await runValidate(root, { json: true });
 
-    expect(report.models.map((m) => m.path)).toEqual([
-      'metrics/core.malloy',
-      'metrics/example.malloy',
-    ]);
+    expect(report.models.map((m) => m.path)).toEqual(['metrics/core.malloy', MODEL]);
   });
 
   it('warns rather than fails when the project has no models yet', async () => {
-    const root = await scaffoldProject({ includeExample: false });
+    const root = await scaffoldProject({ withModel: false });
 
     const report = await runValidate(root, { json: true });
 
@@ -140,8 +145,8 @@ describe('runValidate', () => {
         'project:',
         '  name: analytics',
         '  models: metrics',
+        '  default_connection: duckdb',
         'connections:',
-        '  default: duckdb',
         '  duckdb:',
         '    type: duckdb',
         '    working_directory: metrics',
@@ -151,7 +156,7 @@ describe('runValidate', () => {
       'utf8',
     );
     await writeFile(
-      path.join(root, 'metrics/example.malloy'),
+      path.join(root, MODEL),
       "source: sales is lake.table('sales') extend {\n  measure: revenue is amount.sum()\n}\n",
       'utf8',
     );
@@ -209,8 +214,8 @@ describe('loadConfig', () => {
         'project:',
         '  name: analytics',
         '  models: metrics',
+        '  default_connection: warm',
         'connections:',
-        '  default: warm',
         '  cold:',
         '    type: duckdb',
         '  warm:',
@@ -232,8 +237,8 @@ describe('loadConfig', () => {
       [
         'project:',
         '  models: metrics',
+        '  default_connection: warehouse',
         'connections:',
-        '  default: warehouse',
         '  warehouse:',
         '    type: bigquery',
         `    project_id: ${PROJECT_REF}`,

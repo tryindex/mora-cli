@@ -1,9 +1,9 @@
-import { existsSync } from 'node:fs';
 import path from 'node:path';
 import * as prompts from '@clack/prompts';
 import type { Command } from 'commander';
 import pc from 'picocolors';
-import { isDuckDbConnection, loadConfig, type MoraConfig } from '../config.js';
+import { loadConfig, type MoraConfig, resolveDefaultConnection } from '../config.js';
+import { DATABASES, isDatabaseId } from '../databases.js';
 import { ExitCode, MoraError } from '../errors.js';
 import { pendingMigrations, upgradeConfigFile } from '../migrate.js';
 import { pluginAgentsNotes } from '../plugins/registry.js';
@@ -12,9 +12,6 @@ import {
   AGENTS_FILENAME,
   buildAgentDocs,
   CONFIG_FILENAME,
-  DUCKDB_CONNECTION_NAME,
-  EXAMPLE_MODEL_FILENAME,
-  SAMPLE_DATA_DIR,
   type WrittenFile,
   writeScaffold,
 } from '../scaffold.js';
@@ -193,13 +190,26 @@ function cliBehindError(projectVersion: string): MoraError {
 }
 
 async function refreshOwnedDocs(config: MoraConfig): Promise<WrittenFile[]> {
-  return writeScaffold(
-    config.root,
-    buildAgentDocs({
-      modelsDir: config.modelsDir,
-      connectionName: config.connections.find(isDuckDbConnection)?.name ?? DUCKDB_CONNECTION_NAME,
-    }),
-  );
+  const { written } = await writeScaffold(config.root, buildAgentDocs(agentDocsFor(config)));
+  return written;
+}
+
+/**
+ * The sample code in the owned docs names the project's own default connection,
+ * so an agent reading them copies something that exists. A project whose only
+ * connection is a type Mora has no driver for still gets a plausible table path.
+ */
+function agentDocsFor(config: MoraConfig) {
+  const connection = resolveDefaultConnection(config) ?? config.connections[0];
+  const type = connection?.type;
+  return {
+    modelsDir: config.modelsDir,
+    connectionName: connection?.name ?? 'warehouse',
+    sampleTablePath:
+      type !== undefined && isDatabaseId(type)
+        ? DATABASES[type].sampleTable
+        : DATABASES.bigquery.sampleTable,
+  };
 }
 
 /**
@@ -208,14 +218,9 @@ async function refreshOwnedDocs(config: MoraConfig): Promise<WrittenFile[]> {
  * added rather than at the next upgrade.
  */
 export async function refreshAgentsManagedBlock(config: MoraConfig): Promise<WrittenFile[]> {
-  const exampleModelPath = `${config.modelsDir}/${EXAMPLE_MODEL_FILENAME}`;
-  const hasExample = existsSync(path.join(config.root, exampleModelPath));
   const agentsDoc = renderAgentsDoc({
     projectName: config.projectName,
     modelsDir: config.modelsDir,
-    dataDir: `${config.modelsDir}/${SAMPLE_DATA_DIR}`,
-    exampleModelPath,
-    hasExample,
     agentDocsDir: AGENT_DOCS_DIR,
     pluginNotes: pluginAgentsNotes(config.plugins, {
       root: config.root,
@@ -224,7 +229,7 @@ export async function refreshAgentsManagedBlock(config: MoraConfig): Promise<Wri
     }),
   });
 
-  return writeScaffold(config.root, [
+  const { written } = await writeScaffold(config.root, [
     {
       path: AGENTS_FILENAME,
       strategy: 'managed-block',
@@ -232,6 +237,7 @@ export async function refreshAgentsManagedBlock(config: MoraConfig): Promise<Wri
       surround: { before: agentsDoc.title, after: agentsDoc.teamSection },
     },
   ]);
+  return written;
 }
 
 function reportCheck(report: UpgradeReport): void {

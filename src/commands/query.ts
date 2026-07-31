@@ -61,7 +61,12 @@ Examples:
   $ mora query monthly_revenue
   $ mora query orders.revenue_by_month --limit 12
   $ mora query -e "orders -> { aggregate: revenue }"
-  $ mora query monthly_revenue --sql`,
+  $ mora query monthly_revenue --sql
+
+  --expr takes a whole document, so it can declare a source of its own and read
+  a table no model mentions yet. This is how to check the data before modelling:
+  $ mora query -e "source: probe is duckdb.table('data/orders.csv') extend {}
+  run: probe -> { aggregate: rows is count() }"`,
     )
     .action(async (name: string | undefined, flags: QueryFlags) => {
       const report = await runQueryCommand(flags.directory, name, flags);

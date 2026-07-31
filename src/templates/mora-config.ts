@@ -1,21 +1,18 @@
-import {
-  connectionSettings,
-  DATABASES,
-  type DatabaseId,
-  type SettingsContext,
-} from '../databases.js';
+import { connectionSettings, type DatabaseId, type SettingsContext } from '../databases.js';
+
+export interface ScaffoldConnection {
+  /** Name models will use, as in `warehouse.table('...')`. */
+  name: string;
+  type: DatabaseId;
+  /** Settings as they should appear in mora.yaml, `${VAR}` references included. */
+  settings: Record<string, string>;
+}
 
 export interface MoraConfigOptions {
   projectName: string;
   modelsDir: string;
-  database: DatabaseId;
-  duckdbConnectionName: string;
-  warehouseConnectionName: string;
-  /**
-   * Settings for the chosen warehouse, as they should appear in mora.yaml
-   * (`${VAR}` references included). Ignored when the database is DuckDB.
-   */
-  warehouseSettings?: Record<string, string>;
+  /** The one connection `mora init` declares. Others are added later. */
+  connection: ScaffoldConnection;
   /** Running Mora version, written as `cli_version` so upgrades can detect drift. */
   cliVersion: string;
 }
@@ -29,12 +26,12 @@ function indent(text: string, spaces: number): string {
 }
 
 /**
- * Renders a warehouse connection block from the settings the caller collected
- * and the registry's per-setting comments. Optional settings the caller skipped
- * stay as commented hints, so a teammate still sees what can be filled in later.
+ * Renders a connection block from the settings the caller collected and the
+ * registry's per-setting comments. Optional settings the caller skipped stay as
+ * commented hints, so a teammate still sees what can be filled in later.
  */
-export function renderWarehouseBlock(
-  type: Exclude<DatabaseId, 'duckdb'>,
+export function renderConnectionBlock(
+  type: DatabaseId,
   name: string,
   settings: Record<string, string>,
   context: SettingsContext,
@@ -42,15 +39,19 @@ export function renderWarehouseBlock(
   const lines: string[] = [`${name}:`, `  type: ${type}`];
 
   for (const setting of connectionSettings(type, context)) {
+    const comment = setting.comment
+      ?.split('\n')
+      .map((line) => `  # ${line}`)
+      .join('\n');
     const value = settings[setting.key];
     if (value !== undefined) {
-      if (setting.comment) lines.push(`  # ${setting.comment}`);
+      if (comment) lines.push(comment);
       lines.push(`  ${setting.key}: ${yamlScalar(value)}`);
       continue;
     }
 
     if (!setting.required) {
-      if (setting.comment) lines.push(`  # ${setting.comment}`);
+      if (comment) lines.push(comment);
       const hint = setting.placeholder ?? (setting.envVar ? `\${${setting.envVar}}` : undefined);
       lines.push(hint !== undefined ? `  # ${setting.key}: ${hint}` : `  # ${setting.key}:`);
     }
@@ -69,26 +70,15 @@ function yamlScalar(value: string): string {
 }
 
 export function renderMoraConfig(options: MoraConfigOptions): string {
-  const { projectName, modelsDir, database, duckdbConnectionName, cliVersion } = options;
-  const warehouseName = options.warehouseConnectionName;
-  const defaultConnection = database === 'duckdb' ? duckdbConnectionName : warehouseName;
+  const { projectName, modelsDir, connection, cliVersion } = options;
 
-  // Only the chosen warehouse is written. Adding a connection later is
+  // Exactly one connection, the one the reader asked for. A second is
   // `mora connection add`, which is less error-prone than uncommenting YAML and
   // cannot leave a half-edited block behind.
-  const warehouseSection =
-    database === 'duckdb'
-      ? `  # Run \`mora connection add\` to point this project at a real warehouse.\n` +
-        `  # Mora can open ${Object.keys(DATABASES)
-          .filter((id) => id !== 'duckdb')
-          .join(', ')} connections.`
-      : `  # Filled in by \`mora init\`. Edit or re-run \`mora connection add\` to change.\n` +
-        indent(
-          renderWarehouseBlock(database, warehouseName, options.warehouseSettings ?? {}, {
-            modelsDir,
-          }),
-          2,
-        );
+  const block = indent(
+    renderConnectionBlock(connection.type, connection.name, connection.settings, { modelsDir }),
+    2,
+  );
 
   return `# Mora semantic layer configuration.
 #
@@ -104,21 +94,11 @@ project:
   name: ${projectName}
   # Directory Mora scans for .malloy model files.
   models: ${modelsDir}
-
-connections:
   # Connection used by models that do not name one explicitly.
-  default: ${defaultConnection}
+  default_connection: ${connection.name}
 
-  # DuckDB needs no credentials, so it works immediately. Point \`database\` at
-  # a .duckdb file to persist state between runs.
-  ${duckdbConnectionName}:
-    type: duckdb
-    database: ':memory:'
-    # Relative paths inside ${duckdbConnectionName}.table('...') resolve from here.
-    # This is the models directory, which is also what Malloy Publisher resolves
-    # a package's table paths from, so models stay portable between the two.
-    working_directory: ${modelsDir}
-
-${warehouseSection}
+# Add another with \`mora connection add\`, which edits this file in place.
+connections:
+${block}
 `;
 }

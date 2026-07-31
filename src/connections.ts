@@ -21,14 +21,28 @@ export interface NewConnection {
 }
 
 /** A name that reads as an identifier in a model: `warehouse.table('...')`. */
-const CONNECTION_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const CONNECTION_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * The name to offer for a new connection: the database's own id, suffixed when
+ * the project already has one. A model then reads as `bigquery.table('...')`,
+ * which says what is being read without anyone having to invent a word for it.
+ */
+export function suggestConnectionName(type: DatabaseId, taken: Iterable<string>): string {
+  const used = new Set(taken);
+  if (!used.has(type)) return type;
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${type}_${suffix}`;
+    if (!used.has(candidate)) return candidate;
+  }
+}
 
 export function assertConnectionName(name: string): void {
-  if (CONNECTION_NAME_PATTERN.test(name) && name !== 'default') return;
+  if (CONNECTION_NAME_PATTERN.test(name)) return;
   throw new MoraError(`"${name}" cannot be used as a connection name.`, {
     code: 'invalid-connection-name',
     exitCode: ExitCode.usage,
-    hint: 'Models refer to a connection by name, so it must start with a letter or underscore and contain only letters, digits and underscores. `default` is reserved.',
+    hint: 'Models refer to a connection by name, so it must start with a letter or underscore and contain only letters, digits and underscores.',
   });
 }
 
@@ -70,7 +84,14 @@ export async function addConnection(
   }) as YAMLMap<Scalar, unknown>;
   for (const [key, comment] of Object.entries(connection.comments ?? {})) {
     const item = block.items.find((entry) => entry.key.value === key);
-    if (item) item.key.commentBefore = ` ${comment}`;
+    // Each line needs its own leading space: yaml writes one `#` per line and
+    // would otherwise render the second line flush against the hash.
+    if (item) {
+      item.key.commentBefore = comment
+        .split('\n')
+        .map((line) => ` ${line}`)
+        .join('\n');
+    }
   }
 
   const key = document.createNode(connection.name) as Scalar;
@@ -79,7 +100,17 @@ export async function addConnection(
   key.commentBefore = ` Added by \`mora connection add\`.`;
   connections.set(key, block);
   if (connection.makeDefault) {
-    connections.set(document.createNode('default'), connection.name);
+    const project = document.get('project');
+    if (!isMap(project)) {
+      throw new MoraError(
+        `${CONFIG_FILENAME} has no \`project:\` block to record the default in.`,
+        {
+          code: 'invalid-config',
+          hint: `Add a \`project:\` block to ${CONFIG_FILENAME}, or re-run \`mora init --force\`.`,
+        },
+      );
+    }
+    project.set('default_connection', connection.name);
   }
 
   const contents = document.toString();

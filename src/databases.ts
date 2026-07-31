@@ -7,10 +7,15 @@ export interface DatabaseInfo {
   label: string;
   hint: string;
   /**
-   * DuckDB is the only connection Mora can bring up unattended, which is why
-   * it is the default and the only one the scaffold can compile against.
+   * Whether opening it depends on a credential the reader has to supply. DuckDB
+   * does not, so it is the one database `mora init` can bring up unattended.
    */
   needsCredentials: boolean;
+  /**
+   * A table path shaped the way this database's look, for the sample code in
+   * the docs Mora writes. Illustrative only: Mora ships no data.
+   */
+  sampleTable: string;
 }
 
 export const DATABASES: Record<DatabaseId, DatabaseInfo> = {
@@ -19,12 +24,14 @@ export const DATABASES: Record<DatabaseId, DatabaseInfo> = {
     label: 'DuckDB',
     hint: 'local files (CSV, Parquet, .duckdb) - no setup required',
     needsCredentials: false,
+    sampleTable: 'data/orders.csv',
   },
   bigquery: {
     id: 'bigquery',
     label: 'BigQuery',
     hint: 'requires a GCP project and credentials',
     needsCredentials: true,
+    sampleTable: 'analytics.orders',
   },
 };
 
@@ -80,6 +87,10 @@ export function connectionSettings(id: DatabaseId, context: SettingsContext): Co
         {
           key: 'working_directory',
           label: 'Directory relative table paths resolve from',
+          comment:
+            'Relative paths inside `.table(...)` resolve from here.\n' +
+            "Malloy Publisher resolves a package's table paths from the models\n" +
+            'directory too, so a model written against it stays portable.',
           placeholder: context.modelsDir,
           defaultValue: context.modelsDir,
           required: true,
@@ -136,9 +147,9 @@ export function suggestSetting(setting: ConnectionSetting): string | undefined {
   return undefined;
 }
 
-/** Suggested settings for a warehouse when nobody has answered yet. */
-export function defaultWarehouseSettings(
-  id: Exclude<DatabaseId, 'duckdb'>,
+/** Suggested settings for a connection when nobody has answered yet. */
+export function defaultConnectionSettings(
+  id: DatabaseId,
   modelsDir: string,
 ): Record<string, string> {
   const settings: Record<string, string> = {};

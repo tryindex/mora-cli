@@ -127,9 +127,14 @@ remove cleanly: `remove` re-runs a plugin's `setup` to learn what it owns and
 what it looked like untouched, which is why there is no separate teardown to
 drift out of sync.
 
-**Working in one command.** DuckDB and a sample CSV mean a fresh project compiles
-and answers a question before any credential exists. Never let the empty state
-require setup.
+**A scaffold is a working connection, or it is nothing.** `init` has one job:
+leave the reader with a project whose database answers. It declares the one
+connection they asked for, opens it, and if it cannot open it, takes the whole
+scaffold back off disk. A directory holding `mora.yaml`, docs and a connection
+that has never worked is the half-success the principles rule out — worse than
+an empty directory, because every later command fails on something nobody chose
+to keep. `--no-test` is the deliberate exception, for a credential that will
+only exist later.
 
 ## Architecture
 
@@ -158,6 +163,13 @@ Rules that keep the layers honest:
   a command starts reaching for `yaml`, the logic belongs one layer down.
 - **`openProject` is the front door.** Commands that touch models load through it,
   so `validate`, `describe` and `query` fail identically on the same problems.
+  `mora schema` deliberately does not: it reads the database rather than the
+  models, and requiring a populated `metrics/` would break it in the empty state
+  it exists to serve. It loads the config and picks a connection instead.
+- **One way to open one connection.** `withConnection` in `malloy/runtime.ts`
+  resolves `${VAR}` references, opens, and closes. `connection test` and
+  `schema` both go through it, so a credential that is unset fails with the same
+  named-variable message either way.
 - **The connection registry is one place.** `src/databases.ts` declares what each
   database needs; prompts, CLI flags and the YAML that gets written all derive
   from it, so they cannot drift.
@@ -206,7 +218,8 @@ scaffold really writes to a temp directory. The database is not mocked: a compil
 that passes must mean the columns exist, and a mock cannot promise that. Anything
 needing credentials is `describe.skipIf`-gated on an environment variable and
 committed, so a machine that has them proves the wiring rather than a person
-checking by hand.
+checking by hand. A test that needs a model writes one from
+`test/helpers/fixtures.ts`; the CLI ships none, and a fixture is not a scaffold.
 
 **Never scaffold into this repo.** `mora init .` in the working tree will write
 over `AGENTS.md` and friends. Use a temp directory, always.
@@ -222,8 +235,27 @@ Recorded so they are not rediscovered by accident:
 
 - **`metrics/`, not `semantic/`, and not a prompt.** Standardisation is worth more
   than the choice.
-- **DuckDB is always declared,** even for a warehouse project, so the example
-  compiles and a project always has one connection that works.
+- **One connection, and it is the one that was asked for.** A warehouse project
+  used to get a DuckDB block as well, so that a shipped example could compile.
+  With the example gone the block was a connection nobody chose, sitting in a
+  committed file, inviting models to be written against a database the team does
+  not use. `mora connection add` is how a second one arrives.
+- **`init` ships no models and no data.** The models directory starts empty, with
+  a `.gitkeep` and nothing else. A worked example over a sample CSV made the
+  empty state friendlier and everything after it worse: it modelled a table the
+  project does not have, it had to keep DuckDB declared to compile, and its
+  measures were the first thing every reader deleted. What an agent needs to
+  write the first source is `mora schema` and `.agents/modeling.md`, and those
+  are current for the real warehouse in a way a fixture never is.
+- **The default connection lives under `project:`, not inside `connections:`.**
+  A reserved `default` key among the connection names meant every reader of the
+  map had to skip it and no name could ever be called `default`. It is a
+  property of the project, so it is written where the project's other properties
+  are.
+- **No migration was written for that move.** Nothing is published, so no
+  checkout exists at the old shape and `MIGRATIONS` stays empty. The next shape
+  change will not have that excuse: read the empty list as "nothing has shipped
+  yet", not as precedent.
 - **Table paths resolve from the models directory,** not the data directory, so
   the same model works under Publisher and the VS Code extension.
 - **Doc strings on pass-through queries are omitted.** A `query:` that runs a view
@@ -250,6 +282,45 @@ Recorded so they are not rediscovered by accident:
   others, or unrecording a plugin whose files are still there, is the half-success
   the principles rule out. Modified files are detected first, then the command
   either goes through or does not start.
+- **`mora schema` reads the catalog live; nothing is cached to disk.** A snapshot
+  is a second source of truth whose one distinguishing property is outliving the
+  warehouse it describes, and an agent proposing joins from a stale dump is
+  exactly the quiet wrongness Mora exists to prevent. The caller that would
+  re-read a cache keeps the listing in its own context for as long as it is
+  working, and the listing is a directory walk or one `INFORMATION_SCHEMA` query.
+  Human shell tab-completion is the only consumer that would justify a local
+  index, and it is not a reason to give agents a stale one.
+- **Knowing how to model is a doc, not a command.** `.agents/modeling.md` is
+  owned like the other guides, so `mora upgrade` improves the advice without
+  anyone re-running a generator. Mora provides the facts — `schema` for what
+  exists, `query -e` for what is true of it — and the judgement about which
+  measures a team wants belongs to the agent and the human reviewing the PR. A
+  `mora generate-model` that wrote sources on its own would be producing exactly
+  the unreviewed definitions the tool argues against.
+- **The BigQuery listing degrades to the datasets you can see.** Region-wide
+  `INFORMATION_SCHEMA.TABLES` is one query and the whole answer, but it needs
+  `bigquery.tables.list` across *every* dataset in the project — which an analyst
+  granted three datasets does not have, and BigQuery then returns nothing rather
+  than the three. So a permission denial falls back to project-level `SCHEMATA`
+  (only `bigquery.datasets.get`, and it returns exactly what is visible) and one
+  `UNION ALL` over those datasets. Two queries, not one per dataset, because an
+  INFORMATION_SCHEMA query is billed a minimum either way. Verified against a real
+  project: the region query is denied where the per-dataset query succeeds.
+- **A table Malloy cannot read is a per-table failure, not a per-command one.**
+  `schema` names the table that failed and still reports the others, because a
+  batch that dies whole says nothing about which name was wrong. An empty column
+  list therefore never means "no columns": that case carries an `error` and turns
+  `ok` false.
+- **`mora query -e` takes a document, not just a query.** An expression may
+  declare its own source, which is what makes checking the data possible *before*
+  any model exists — the first step of modelling, not an afterthought. It is
+  still marked `reviewed: false`, because a throwaway probe is not a definition.
+- **A named view runs as `source -> view`, not through `loadExploreByName`.**
+  That materializer compiles the view against the source in isolation and loses
+  its joins: the SQL selects the joined column and never joins the table, so the
+  database rejects a view that `validate` passed. Do not "simplify" it back —
+  `test/query.test.ts` has a joined view guarding this, and the failure it
+  catches looks like a broken model rather than a broken query path.
 
 ## Where this goes next
 
@@ -260,11 +331,14 @@ In rough order, and each one should stay recognisable as the same tool:
    registry in `databases.ts` plus a case in `runtime.ts`.
 2. **Real retrieval in `describe`.** Today it is substring matching over names and
    doc strings. An agent should be able to find a definition by meaning, over the
-   committed vocabulary first. Searching the *warehouse* schema is a separate,
-   later problem; do not conflate them.
-3. **MCP over the development loop.** `validate`, `describe` and `query` against a
-   checkout, for agents that prefer tools to shell commands. Serving finished
-   models over MCP is Publisher's job and stays there.
+   committed vocabulary first. Searching the *warehouse* schema is a separate
+   problem and it lives in `mora schema`; do not conflate the two. `describe` is
+   the semantic layer, `schema` is the database behind it, and the day one of them
+   starts answering for the other, an agent can no longer tell a reviewed
+   definition from a raw column.
+3. **MCP over the development loop.** `validate`, `describe`, `schema` and `query`
+   against a checkout, for agents that prefer tools to shell commands. Serving
+   finished models over MCP is Publisher's job and stays there.
 4. **More plugins.** The interface is one function on purpose. Grow it only when a
    real integration cannot be expressed as "these files, these gitignore lines,
    these next steps" — a plugin that wants to register a command or hook
