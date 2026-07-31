@@ -2,15 +2,11 @@ import { createRequire } from 'node:module';
 import { Command, CommanderError } from 'commander';
 import pc from 'picocolors';
 import { registerConnectionCommand } from './commands/connection.js';
-import { registerDescribeCommand } from './commands/describe.js';
 import { registerInitCommand } from './commands/init.js';
-import { registerPluginCommand } from './commands/plugin.js';
 import { registerQueryCommand } from './commands/query.js';
 import { registerSchemaCommand } from './commands/schema.js';
-import { registerUpgradeCommand } from './commands/upgrade.js';
 import { registerValidateCommand } from './commands/validate.js';
 import { ExitCode, type MoraError, toMoraError } from './errors.js';
-import { maybeNotifyUpdate } from './update-check.js';
 import { CLI_VERSION } from './version.js';
 
 const requirePackage = createRequire(import.meta.url);
@@ -23,8 +19,13 @@ function buildProgram(): Command {
     .name('mora')
     .description(
       `${pkg.description}\n\n` +
-        'Mora is built to be driven by a coding agent. Every command accepts flags for\n' +
-        'unattended use and --json for machine-readable output.',
+        'Mora is built to be driven by a coding agent. The loop it exists for:\n' +
+        '  mora schema      what the warehouse holds\n' +
+        '  mora query -f    check what is true of it before modelling it\n' +
+        '  mora validate    the model compiles, so the columns really exist\n' +
+        '  mora query       run a definition a human reviewed\n\n' +
+        'Every command accepts flags for unattended use and --json for machine-readable\n' +
+        'output.',
     )
     .version(CLI_VERSION, '-v, --version')
     .showHelpAfterError()
@@ -33,13 +34,10 @@ function buildProgram(): Command {
     });
 
   registerInitCommand(program);
-  registerUpgradeCommand(program);
-  registerValidateCommand(program);
-  registerDescribeCommand(program);
-  registerQueryCommand(program);
-  registerSchemaCommand(program);
   registerConnectionCommand(program);
-  registerPluginCommand(program);
+  registerSchemaCommand(program);
+  registerQueryCommand(program);
+  registerValidateCommand(program);
 
   return program;
 }
@@ -59,9 +57,6 @@ const wantsJson = process.argv.includes('--json');
 
 try {
   await main(process.argv);
-  // Fire-and-forget style: await so the process stays alive long enough for a
-  // short registry check, but never let a failure change the exit code.
-  await maybeNotifyUpdate({ json: wantsJson });
 } catch (error) {
   if (error instanceof CommanderError) {
     // Commander already reported the problem and chose an exit code.

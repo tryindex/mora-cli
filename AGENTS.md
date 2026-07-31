@@ -21,20 +21,35 @@ and nobody notices when two answers quietly disagree. The failure is not bad SQL
 It is that the definitions live nowhere, so nothing can be reviewed and no answer
 can be audited without reading the whole query.
 
+Moving the definitions into a semantic layer is the fix, and it is also the part
+nobody does. dbt has had a metrics layer for years and it is famously underused —
+not because running reviewed metrics is hard, but because *writing* them is: it
+means reading unfamiliar tables, checking what the columns actually mean, and
+getting a human to agree the scope. That work is what Mora is for.
+
 ## What Mora is
 
-Mora moves those definitions into a version-controlled semantic layer built on
-[Malloy](https://malloydata.dev), and gives agents a command line for using it.
-Dimensions, measures and joins are declared once, reviewed like any other code,
-and composed into queries.
+Mora is a command line for one loop, and the loop is the product:
+
+```
+1. mora schema        what the warehouse holds
+2. mora query -f      what is true of it, checked rather than assumed
+3. ask a human        which of it is worth modelling
+4. write the models   documented definitions, in metrics/
+5. mora validate      they compile, so the columns really exist
+6. pull request       a human approves them, which is what makes them trustworthy
+```
 
 Three consequences follow, and they are the whole design:
 
 1. **A pull request is the trust mechanism.** A definition is trustworthy because
    a human approved it, not because the tool is clever. Everything Mora does
-   should make a change to a definition easier to review.
-2. **The vocabulary is discoverable.** An agent cannot compose definitions it
-   cannot find, so `mora describe` is as important as `mora query`.
+   should make a change to a definition easier to review, and every command
+   should be judged by whether it moves the loop forward.
+2. **Nothing is assumed about the data.** A column called `total` may or may not
+   include tax, and the difference is a wrong number in a dashboard. Mora's job
+   is to make checking cheaper than guessing — that is why `query` runs
+   unreviewed Malloy at all, and why it says so in the report when it does.
 3. **The interface is a CLI.** Any agent that can run a command can use Mora —
    Cursor, Claude Code, Codex, or something nobody has written yet. That is worth
    more than a nicer integration with any one of them.
@@ -44,10 +59,9 @@ Three consequences follow, and they are the whole design:
 Mora is the **authoring** half of a semantic layer. Deliberately out of scope:
 
 - **Serving models.** [Malloy Publisher](https://github.com/malloydata/publisher)
-  exposes models over REST and MCP to BI tools and applications. `mora plugin add
-  publisher` writes the files Publisher needs and otherwise stays out of its way.
-  We do not build a server, and we do not edit `publisher.config.json` after
-  writing it.
+  exposes models over REST and MCP to BI tools and applications. A Mora project
+  works with it as-is, because table paths resolve from the models directory. We
+  do not build a server and we do not write its config.
 - **Being a BI tool.** No dashboards, no charts, no saved-report management.
   `mora query` prints rows so an answer can be checked, not so it can be
   presented.
@@ -55,6 +69,9 @@ Mora is the **authoring** half of a semantic layer. Deliberately out of scope:
   belongs upstream, not in a Mora abstraction that hides it.
 - **Warehouse management.** Mora reads. It does not migrate schemas, load data,
   or schedule anything.
+- **Wrapping things the agent can already do.** The agent is in the checkout. It
+  can read `metrics/*.malloy` and it can read a README. A command that only
+  reformats something already on disk is surface area with no user.
 
 Composing with the ecosystem beats competing with it. A model written for Mora
 must also work in the VS Code Malloy extension and on a Publisher server —
@@ -92,49 +109,40 @@ is wrong" from "the tool could not run": a broken model is a per-model failure i
 the report, an unopenable connection is one error for the whole command.
 
 **Reviewed and unreviewed are different things.** `mora query <name>` runs logic
-someone approved; `-e` runs logic nobody has. The result says which, and the
-guidance tells agents to promote anything worth keeping into a named definition.
-Never blur this to make output tidier.
+someone approved; `-e` and `-f` run logic nobody has. The result says which, and
+the guidance tells agents to promote anything worth keeping into a named
+definition. Never blur this to make output tidier.
 
 **Definitions explain themselves.** `#"` doc strings are part of the model, not
-comments on it, so they travel to `describe`, to search, and to a served model. A
-definition arrives with the caveats that make it safe to use, or it invites
-someone to re-derive it by hand.
+comments on it, so they travel with a definition to anything that reads the model.
+A definition arrives with the caveats that make it safe to use, or it invites
+someone to re-derive it by hand. "Excludes the 3% of rows with a null region" is
+the kind of thing that must not live only in the answer an agent gave once.
 
 **Committed files never hold secrets.** `mora.yaml` is committed, so credentials
 go in as `${VAR}` and resolve only when a connection opens. `.env.example` records
 which variables a project needs; `.env` holds values and is gitignored. When in
 doubt, write the reference.
 
-**Own little, and own it visibly.** Upgrading must never argue with a team's
-writing. `.agents/*.md` belongs to Mora and is replaced wholesale by
-`mora upgrade`. `AGENTS.md` is shared through `mora:begin`/`mora:end` markers,
-with the team's section outside them. `mora.yaml` belongs to the project — which
-is why `mora connection add` and `mora upgrade` edit it as a YAML document,
-preserving comments, rather than re-rendering it. The `cli_version` stamp makes
-the *project* the source of truth for which Mora the team is on, so a teammate
-on an older CLI is told to update rather than rewriting committed docs backwards.
+**Own little, and own it visibly.** `.agents/*.md` belongs to Mora and is
+rewritten whenever Mora writes it. `AGENTS.md` is shared through
+`mora:begin`/`mora:end` markers, with the team's section outside them.
+`mora.yaml` belongs to the project — which is why `mora connection add` edits it
+as a YAML document, preserving comments, rather than re-rendering it.
 
 **Convention over configuration.** Models go in `metrics/`, and `init` does not
 ask. Every Mora project keeping them in the same place is worth more than the
 choice, and it lets the docs an agent reads name the directory outright. Escape
 hatches stay (`--models`), but they are not prompts.
 
-**A scaffold is the semantic layer, and nothing else.** Anything a project might
-not need is a plugin it opts into with `mora plugin add`, not a file `init`
-writes on the chance it is wanted. What Mora installs, it must also be able to
-remove cleanly: `remove` re-runs a plugin's `setup` to learn what it owns and
-what it looked like untouched, which is why there is no separate teardown to
-drift out of sync.
+**A scaffold is the semantic layer, and nothing else.** `init` writes the config,
+an empty models directory, and the docs. It does not write a model: what belongs
+there is sources over the reader's own tables, and only they know which. It does
+not write anything a project might not need.
 
-**A scaffold is a working connection, or it is nothing.** `init` has one job:
-leave the reader with a project whose database answers. It declares the one
-connection they asked for, opens it, and if it cannot open it, takes the whole
-scaffold back off disk. A directory holding `mora.yaml`, docs and a connection
-that has never worked is the half-success the principles rule out — worse than
-an empty directory, because every later command fails on something nobody chose
-to keep. `--no-test` is the deliberate exception, for a credential that will
-only exist later.
+**Five commands, and each one earns its place.** `init` and `connection` set a
+project up; `schema`, `query` and `validate` are the loop. A sixth needs to be
+something an agent cannot already do with the file system and these five.
 
 ## Architecture
 
@@ -142,10 +150,9 @@ only exist later.
 src/cli.ts            registers commands, renders top-level failures
 src/commands/*.ts     one file per command: flags, prompts, prose, JSON report
 src/malloy/*.ts       the only code that imports Malloy
-src/plugins/*.ts      the plugin interface, the built-ins, and the loader
 src/templates/*.ts    pure render functions, no I/O
-src/*.ts              domain: config, connections, env, scaffold, migrate,
-                      version, update-check, project, errors, databases
+src/*.ts              domain: config, connections, env, scaffold, version,
+                      project, errors, databases
 ```
 
 Rules that keep the layers honest:
@@ -159,10 +166,10 @@ Rules that keep the layers honest:
   their output.
 - **Commands do not parse.** A command file reads flags, calls domain functions,
   and formats the result. YAML parsing lives in `config.ts`, YAML *editing* in
-  `connections.ts` and `plugins/config.ts`, environment resolution in `env.ts`. If
-  a command starts reaching for `yaml`, the logic belongs one layer down.
+  `connections.ts`, environment resolution in `env.ts`. If a command starts
+  reaching for `yaml`, the logic belongs one layer down.
 - **`openProject` is the front door.** Commands that touch models load through it,
-  so `validate`, `describe` and `query` fail identically on the same problems.
+  so `validate` and `query` fail identically on the same problems.
   `mora schema` deliberately does not: it reads the database rather than the
   models, and requiring a populated `metrics/` would break it in the empty state
   it exists to serve. It loads the config and picks a connection instead.
@@ -173,11 +180,10 @@ Rules that keep the layers honest:
 - **The connection registry is one place.** `src/databases.ts` declares what each
   database needs; prompts, CLI flags and the YAML that gets written all derive
   from it, so they cannot drift.
-- **Third-party plugin code runs only when someone names it.** `mora plugin add
-  <name>` is the one command that may install and import a package. Nothing else
-  imports from `.mora/plugins/` — notably not `mora upgrade`, which renders
-  AGENTS.md and must not execute a package to do it. That is why `agentsNote` is
-  honoured for built-ins only.
+- **`src/malloy/vocabulary.ts` is an index, not a command.** It reads sources,
+  fields and named queries out of the compiled models, and its one consumer is
+  `mora query` resolving a name. There is no command that prints it: see the
+  decision below.
 
 ## Anatomy of a command
 
@@ -218,8 +224,7 @@ scaffold really writes to a temp directory. The database is not mocked: a compil
 that passes must mean the columns exist, and a mock cannot promise that. Anything
 needing credentials is `describe.skipIf`-gated on an environment variable and
 committed, so a machine that has them proves the wiring rather than a person
-checking by hand. A test that needs a model writes one from
-`test/helpers/fixtures.ts`; the CLI ships none, and a fixture is not a scaffold.
+checking by hand.
 
 **Never scaffold into this repo.** `mora init .` in the working tree will write
 over `AGENTS.md` and friends. Use a temp directory, always.
@@ -233,31 +238,39 @@ stale ships a CLI that lies about itself.
 
 Recorded so they are not rediscovered by accident:
 
+- **The modelling loop is the product; the commands are its parts.** Mora was
+  briefly a broader tool — a vocabulary browser, a plugin system, an upgrade
+  channel, a gcloud project picker. All of it was polish on an unvalidated
+  premise, and it made the one differentiated thing harder to see. What is left
+  is the path from a raw warehouse to a reviewed definition. Judge a proposed
+  command by which step of that path it serves; if the answer is "none", it does
+  not go in.
+- **There is no `mora describe`.** There was, and it printed the vocabulary as a
+  formatted listing. But the agent is in the checkout: reading `metrics/*.malloy`
+  gives it the definitions with their doc strings, filters and joins, which is
+  strictly more than the listing had, and substring matching over names was never
+  retrieval. The index survives as `src/malloy/vocabulary.ts` because `query`
+  needs it to resolve a name. Do not re-add the command; if finding definitions by
+  meaning becomes a real problem, it is a retrieval problem, not a formatter.
+- **No plugin system.** Publisher compatibility is a property of where table
+  paths resolve from, not of files Mora writes. Two JSON files documented in the
+  README cost a reader less than a plugin interface, a loader, a registry and a
+  remove-that-refuses-atomically, none of which had a second plugin to justify
+  them. A future integration that genuinely cannot be a doc can reopen this.
+- **No `mora upgrade`, and no `cli_version` stamp.** Versioning the project
+  separately from the binary buys the ability to migrate committed files, and
+  there is nothing committed anywhere to migrate. Updating is `npm i -g
+  @moradata/cli@latest`; re-scaffolding docs is `init --force`. When a config
+  shape actually has to change under real users, migration comes back — with
+  users to justify it.
 - **`metrics/`, not `semantic/`, and not a prompt.** Standardisation is worth more
   than the choice.
-- **One connection, and it is the one that was asked for.** A warehouse project
-  used to get a DuckDB block as well, so that a shipped example could compile.
-  With the example gone the block was a connection nobody chose, sitting in a
-  committed file, inviting models to be written against a database the team does
-  not use. `mora connection add` is how a second one arrives.
-- **`init` ships no models and no data.** The models directory starts empty, with
-  a `.gitkeep` and nothing else. A worked example over a sample CSV made the
-  empty state friendlier and everything after it worse: it modelled a table the
-  project does not have, it had to keep DuckDB declared to compile, and its
-  measures were the first thing every reader deleted. What an agent needs to
-  write the first source is `mora schema` and `.agents/modeling.md`, and those
-  are current for the real warehouse in a way a fixture never is.
-- **The default connection lives under `project:`, not inside `connections:`.**
-  A reserved `default` key among the connection names meant every reader of the
-  map had to skip it and no name could ever be called `default`. It is a
-  property of the project, so it is written where the project's other properties
-  are.
-- **No migration was written for that move.** Nothing is published, so no
-  checkout exists at the old shape and `MIGRATIONS` stays empty. The next shape
-  change will not have that excuse: read the empty list as "nothing has shipped
-  yet", not as precedent.
 - **Table paths resolve from the models directory,** not the data directory, so
   the same model works under Publisher and the VS Code extension.
+- **`init` writes no model.** A generated example is a definition nobody
+  reviewed, sitting in the one directory that is supposed to hold only reviewed
+  definitions. The empty state is the honest one, and it is what sends an agent
+  to `.agents/modeling.md`.
 - **Doc strings on pass-through queries are omitted.** A `query:` that runs a view
   inherits its description; repeating it produces a concatenated, redundant one.
 - **BigQuery `project_id` also defaults the billing project.** The driver only
@@ -265,35 +278,20 @@ Recorded so they are not rediscovered by accident:
   setting one and getting "unable to detect a project id" is not acceptable.
 - **A setting the driver ignores does not get a prompt.** `dataset` was removed
   for exactly this reason. Offering a knob that does nothing is a lie.
-- **`init` join mode skips compiling when a credential is unset,** rather than
-  failing every model with the message it just printed.
-- **Publisher is a plugin, not part of the scaffold.** A project that will never
-  be served should not carry two JSON files explaining how to serve it. The
-  extension point is a plugin because "add a Publisher command" and "add a plugin
-  system whose first plugin is Publisher" cost about the same, and only one of
-  them means the next integration is not another flag on `init`.
-- **`mora plugin`, singular, in the group grammar.** It matches
-  `mora connection add`, and `mora add` would not say what is being added.
-- **Plugins are recorded in `mora.yaml`,** not inferred from files on disk. A
-  teammate cloning the repo can then be *told* which integrations the project
-  uses and which are missing locally, instead of Mora guessing from a file that
-  might have been deleted by hand.
-- **A refused `remove` writes nothing at all.** Deleting some files and leaving
-  others, or unrecording a plugin whose files are still there, is the half-success
-  the principles rule out. Modified files are detected first, then the command
-  either goes through or does not start.
+- **Interactive BigQuery setup asks for a project id; it does not go looking.**
+  Reading gcloud state to offer a searchable, data-filtered project list was a
+  few hundred lines and a dependency to save typing a string a reader knows.
+  Unattended runs always passed `--project-id` anyway, so none of it was on the
+  path an agent takes.
 - **`mora schema` reads the catalog live; nothing is cached to disk.** A snapshot
   is a second source of truth whose one distinguishing property is outliving the
   warehouse it describes, and an agent proposing joins from a stale dump is
   exactly the quiet wrongness Mora exists to prevent. The caller that would
   re-read a cache keeps the listing in its own context for as long as it is
   working, and the listing is a directory walk or one `INFORMATION_SCHEMA` query.
-  Human shell tab-completion is the only consumer that would justify a local
-  index, and it is not a reason to give agents a stale one.
 - **Knowing how to model is a doc, not a command.** `.agents/modeling.md` is
-  owned like the other guides, so `mora upgrade` improves the advice without
-  anyone re-running a generator. Mora provides the facts — `schema` for what
-  exists, `query -e` for what is true of it — and the judgement about which
+  owned like the other guides. Mora provides the facts — `schema` for what
+  exists, `query -f` for what is true of it — and the judgement about which
   measures a team wants belongs to the agent and the human reviewing the PR. A
   `mora generate-model` that wrote sources on its own would be producing exactly
   the unreviewed definitions the tool argues against.
@@ -311,10 +309,11 @@ Recorded so they are not rediscovered by accident:
   batch that dies whole says nothing about which name was wrong. An empty column
   list therefore never means "no columns": that case carries an `error` and turns
   `ok` false.
-- **`mora query -e` takes a document, not just a query.** An expression may
+- **Unreviewed Malloy is a document, not just a query.** An expression may
   declare its own source, which is what makes checking the data possible *before*
-  any model exists — the first step of modelling, not an afterthought. It is
-  still marked `reviewed: false`, because a throwaway probe is not a definition.
+  any model exists — the first step of modelling, not an afterthought. `-f` and
+  `-e -` exist because a real probe runs to several lines and shell quoting is the
+  worst place to keep one. All of it is still `reviewed: false`.
 - **A named view runs as `source -> view`, not through `loadExploreByName`.**
   That materializer compiles the view against the source in isolation and loses
   its joins: the SQL selects the joined column and never joins the table, so the
@@ -326,28 +325,23 @@ Recorded so they are not rediscovered by accident:
 
 In rough order, and each one should stay recognisable as the same tool:
 
-1. **More warehouses.** DuckDB and BigQuery work. Snowflake, Postgres and Trino
+1. **Depth in the loop.** The unsolved problem is not running queries, it is
+   getting from a strange warehouse to definitions a human will approve without
+   wincing. Anything that makes the checks in `.agents/modeling.md` more
+   thorough, or the evidence in the resulting pull request more convincing,
+   is the highest-value work available.
+2. **More warehouses.** DuckDB and BigQuery work. Snowflake, Postgres and Trino
    are drivers Malloy already has, and each is a connection type away — the
    registry in `databases.ts` plus a case in `runtime.ts`.
-2. **Real retrieval in `describe`.** Today it is substring matching over names and
-   doc strings. An agent should be able to find a definition by meaning, over the
-   committed vocabulary first. Searching the *warehouse* schema is a separate
-   problem and it lives in `mora schema`; do not conflate the two. `describe` is
-   the semantic layer, `schema` is the database behind it, and the day one of them
-   starts answering for the other, an agent can no longer tell a reviewed
-   definition from a raw column.
-3. **MCP over the development loop.** `validate`, `describe`, `schema` and `query`
-   against a checkout, for agents that prefer tools to shell commands. Serving
-   finished models over MCP is Publisher's job and stays there.
-4. **More plugins.** The interface is one function on purpose. Grow it only when a
-   real integration cannot be expressed as "these files, these gitignore lines,
-   these next steps" — a plugin that wants to register a command or hook
-   `validate` is a request to redesign this, not a flag to add.
-
-`mora upgrade` is shipped: it refreshes `.agents/`, the managed `AGENTS.md`
-block, and the `cli_version` stamp, with an empty migration list ready for the
-first schema change. Future config shape changes belong in `src/migrate.ts`.
-`plugins:` needed no migration because an absent key means no plugins.
+3. **MCP over the loop.** `schema`, `query` and `validate` against a checkout,
+   for agents that prefer tools to shell commands. Serving finished models over
+   MCP is Publisher's job and stays there.
+4. **A second backend, once the loop is proven.** The discipline in
+   `.agents/modeling.md` is not Malloy-specific: probe the assumptions, document
+   the caveats, agree the scope, open a PR. If it demonstrably produces models
+   humans accept, the same loop over dbt's semantic layer is where the users are.
+   Do not start this before the loop has convinced anyone, and do not carry a
+   backend abstraction in anticipation of it.
 
 ## Before you call it done
 

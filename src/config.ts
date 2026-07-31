@@ -58,37 +58,17 @@ export type SupportedConnectionConfig = DuckDbConnectionConfig | BigQueryConnect
 
 export type ConnectionConfig = SupportedConnectionConfig | UnsupportedConnectionConfig;
 
-/**
- * A plugin the project has added. Recorded in mora.yaml so a teammate cloning
- * the repo can see which integrations it uses, and so `mora upgrade` knows which
- * notes belong in AGENTS.md, without having to guess from the files on disk.
- */
-export interface PluginEntry {
-  name: string;
-  /** npm package a third-party plugin came from; undefined for a built-in. */
-  package: string | undefined;
-  /** Version that was installed when it was added, when it is known. */
-  version: string | undefined;
-}
-
 export interface MoraConfig {
   /** Absolute project root, the directory holding mora.yaml. */
   root: string;
   /** Config schema version (`version:` in mora.yaml). */
   version: number;
-  /**
-   * The Mora CLI version that last ran `mora upgrade` (or scaffolded) this
-   * project. Optional so checkouts scaffolded before the stamp existed still
-   * load; missing means an upgrade is pending.
-   */
-  cliVersion: string | undefined;
   projectName: string;
   /** Models directory, relative to the root, with forward slashes. */
   modelsDir: string;
   connections: ConnectionConfig[];
   /** `project.default_connection`: what a model naming no connection reads from. */
   defaultConnection: string | undefined;
-  plugins: PluginEntry[];
   /** Environment variables the config expects, from every `${VAR}` reference. */
   requiredEnvVars: string[];
 }
@@ -131,12 +111,10 @@ export function parseConfig(contents: string, root: string): MoraConfig {
   return {
     root,
     version,
-    cliVersion: readCliVersion(document.cli_version),
     projectName: readProjectName(project.name, root),
     modelsDir: readModelsDir(project.models),
     connections: readConnections(document.connections, root),
     defaultConnection: readDefaultConnection(project.default_connection),
-    plugins: readPlugins(document.plugins),
     requiredEnvVars: collectEnvVars(document),
   };
 }
@@ -183,14 +161,6 @@ function readVersion(value: unknown): number {
   return SUPPORTED_CONFIG_VERSION;
 }
 
-function readCliVersion(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw invalidConfig('`cli_version` must be a non-empty string when set.');
-  }
-  return value.trim();
-}
-
 function readProjectName(value: unknown, root: string): string {
   if (value === undefined || value === null) return path.basename(root);
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -220,53 +190,6 @@ function readDefaultConnection(value: unknown): string | undefined {
     throw invalidConfig('`project.default_connection` must name one of the declared connections.');
   }
   return value.trim();
-}
-
-/**
- * A built-in plugin is a bare name; a third-party one carries the package it came
- * from, because the name alone is not enough to install it again.
- */
-function readPlugins(value: unknown): PluginEntry[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) {
-    throw invalidConfig('`plugins:` must be a list of plugin names.');
-  }
-
-  return value.map((item) => {
-    if (typeof item === 'string') {
-      return { name: readPluginName(item), package: undefined, version: undefined };
-    }
-
-    const entry = asRecord(item);
-    if (!entry) {
-      throw invalidConfig('each entry under `plugins:` must be a name or a mapping.');
-    }
-    if (typeof entry.name !== 'string') {
-      throw invalidConfig('each mapping under `plugins:` needs a `name`.');
-    }
-
-    return {
-      name: readPluginName(entry.name),
-      package: readPluginField(entry.name, 'package', entry.package),
-      version: readPluginField(entry.name, 'version', entry.version),
-    };
-  });
-}
-
-function readPluginField(plugin: string, key: string, value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw invalidConfig(`plugin \`${plugin}\` has an invalid \`${key}\`.`);
-  }
-  return value.trim();
-}
-
-function readPluginName(value: string): string {
-  const name = value.trim();
-  if (name.length === 0) {
-    throw invalidConfig('a plugin name under `plugins:` cannot be empty.');
-  }
-  return name;
 }
 
 function readConnections(value: unknown, root: string): ConnectionConfig[] {

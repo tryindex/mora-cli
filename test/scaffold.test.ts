@@ -45,12 +45,6 @@ describe('buildScaffold', () => {
     ]);
   });
 
-  it('leaves optional integrations to `mora plugin add`', () => {
-    const paths = buildScaffold(spec()).map((file) => file.path);
-    expect(paths).not.toContain('publisher.config.json');
-    expect(paths).not.toContain('metrics/publisher.json');
-  });
-
   it('writes no model and no data: what belongs there is the reader’s own tables', () => {
     const files = buildScaffold(spec());
     expect(files.some((file) => file.path.endsWith('.malloy'))).toBe(false);
@@ -89,10 +83,21 @@ describe('generated agent docs', () => {
   it('shows the throwaway source in a form that runs', () => {
     const guide = doc('.agents/modeling.md');
 
-    // `mora query -e` takes a document, so the source and the query that reads
-    // it have to travel together; half of this pair does nothing on its own.
+    // Unreviewed Malloy is a whole document, so the source and the query that
+    // reads it have to travel together; half of this pair does nothing alone.
     expect(guide).toContain("source: probe is duckdb.table('data/orders.csv') extend {}");
     expect(guide).toContain('run: probe ->');
+  });
+
+  it('sends an agent to the models themselves for the vocabulary', () => {
+    const agents = doc('AGENTS.md');
+    const guide = doc('.agents/mora.md');
+
+    // There is no `describe` command: the models are in the checkout, and
+    // reading them says more than any listing would.
+    expect(agents).not.toContain('mora describe');
+    expect(guide).not.toContain('mora describe');
+    expect(agents).toContain('Read the models in `metrics/`');
   });
 
   it('writes sample code against the project’s own connection and table shape', () => {
@@ -127,15 +132,23 @@ describe('generated agent docs', () => {
     const guide = doc('.agents/mora.md');
 
     expect(guide).toContain('## mora schema');
-    // The distinction that stops an agent reaching for the wrong one.
-    expect(guide).toContain('where `describe` shows the semantic layer');
+    // The distinction that stops an agent reading the warehouse when it meant
+    // to read the semantic layer over it.
+    expect(guide).toContain('Shows the *warehouse*');
     expect(guide).toContain('truncated');
+  });
+
+  it('documents running a probe from a file, which is how a real one is written', () => {
+    const guide = doc('.agents/mora.md');
+    const modeling = doc('.agents/modeling.md');
+
+    expect(guide).toContain('-f, --file <path>');
+    expect(modeling).toContain('mora query -f');
   });
 });
 
 interface ParsedConfig {
   version: number;
-  cli_version: string;
   project: { name: string; models: string; default_connection: string };
   connections: Record<string, Record<string, unknown> | undefined>;
 }
@@ -149,7 +162,6 @@ describe('generated mora.yaml', () => {
   it('is valid YAML describing the project and a working DuckDB connection', () => {
     const parsed = config();
     expect(parsed.version).toBe(1);
-    expect(parsed.cli_version).toMatch(/^\d+\.\d+\.\d+/);
     expect(parsed.project).toEqual({
       name: 'analytics',
       models: 'metrics',
@@ -265,7 +277,7 @@ describe('writeScaffold', () => {
     const { written: refreshed } = await writeScaffold(root, files);
     expect(refreshed.find((file) => file.path === '.agents/mora.md')?.action).toBe('overwritten');
     await expect(readFile(path.join(root, '.agents/mora.md'), 'utf8')).resolves.toContain(
-      'mora describe',
+      'mora query',
     );
   });
 

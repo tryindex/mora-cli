@@ -14,11 +14,10 @@ import {
 import { renderAgentsDoc } from './templates/agents-doc.js';
 import { renderEnvExample } from './templates/env.js';
 import { renderMoraConfig } from './templates/mora-config.js';
-import { CLI_VERSION } from './version.js';
 
 export const CONFIG_FILENAME = 'mora.yaml';
 export const AGENTS_FILENAME = 'AGENTS.md';
-/** Docs Mora owns outright, kept out of AGENTS.md so upgrades never conflict. */
+/** Docs Mora owns outright, kept out of AGENTS.md so a team's own writing is never touched. */
 export const AGENT_DOCS_DIR = '.agents';
 
 export interface ScaffoldSpec {
@@ -102,7 +101,6 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
       settings:
         spec.connectionSettings ?? defaultConnectionSettings(spec.database, paths.modelsDir),
     },
-    cliVersion: CLI_VERSION,
   });
 
   files.push({
@@ -165,10 +163,9 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
 }
 
 /**
- * The docs Mora writes and keeps current. Kept separate from the rest of the
- * scaffold so `mora upgrade` can refresh them in a project it did not create,
- * rather than leaving a checkout frozen at whichever version of Mora scaffolded
- * it.
+ * The docs Mora writes and owns. Kept separate from the rest of the scaffold
+ * because they are rewritten on every run: an existing copy is a previous
+ * version of Mora's own output, never something a team wrote.
  */
 export function buildAgentDocs(options: AgentDocsOptions): ScaffoldFile[] {
   return [

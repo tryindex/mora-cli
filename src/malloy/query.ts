@@ -3,14 +3,14 @@ import { pathToFileURL } from 'node:url';
 import type { QueryMaterializer, Runtime } from '@malloydata/malloy';
 import { MoraError } from '../errors.js';
 import { looksLikeMissingData } from './compile.js';
+import { describeError, openRuntime, type RuntimeRequest } from './runtime.js';
 import {
   type Definition,
-  describeModels,
   indexDefinitions,
+  readVocabulary,
   resolveDefinition,
   type Vocabulary,
-} from './describe.js';
-import { describeError, openRuntime, type RuntimeRequest } from './runtime.js';
+} from './vocabulary.js';
 
 /** One row, as plain JSON-safe values ready to print or serialize. */
 export type QueryRow = Record<string, unknown>;
@@ -19,7 +19,7 @@ export interface QueryRequest extends RuntimeRequest {
   /** Absolute project root, which model paths are relative to. */
   root: string;
   modelPaths: readonly string[];
-  /** A definition to run, as `mora describe` lists it. */
+  /** A definition to run: a `query:` declaration, or a view as `source.view`. */
   name?: string;
   /** Malloy to run that the model does not define. */
   expr?: string;
@@ -53,7 +53,7 @@ export async function runQuery(request: QueryRequest): Promise<QueryOutcome> {
   const opened = await openRuntime(request);
 
   try {
-    const vocabulary = await describeModels(opened.runtime, request.root, request.modelPaths);
+    const vocabulary = await readVocabulary(opened.runtime, request.root, request.modelPaths);
     const { query, name, model, reviewed } = request.expr
       ? adHoc(opened.runtime, request, vocabulary)
       : named(opened.runtime, request, vocabulary);
@@ -103,7 +103,7 @@ function named(runtime: Runtime, request: QueryRequest, vocabulary: Vocabulary):
   if (!request.name) {
     throw new MoraError('No query to run.', {
       code: 'no-query',
-      hint: 'Pass a definition name, or -e with Malloy to run. `mora describe` lists the names.',
+      hint: 'Pass a definition name, or -e with Malloy to run.',
     });
   }
 
@@ -216,7 +216,7 @@ function soleModel(modelPaths: readonly string[]): string {
     hint:
       modelPaths.length === 0
         ? 'This project has no models yet. Declare the source in the expression itself: `source: probe is <connection>.table(...)` followed by `run:`.'
-        : 'Start the expression with a source name, as `mora describe` lists it.',
+        : 'Start the expression with the name of a source one of the models declares.',
   });
 }
 
@@ -229,7 +229,7 @@ function compileFailure(error: unknown): MoraError {
   const hint = looksLikeMissingData(message)
     ? 'The tables the model reads are not readable here, which usually means the data is ' +
       'missing rather than the query being wrong. Data files are normally gitignored.'
-    : 'Run `mora validate` to check the model, and `mora describe` to see what it defines.';
+    : 'Run `mora validate` to check the model, and read the model file to see what it defines.';
 
   return new MoraError(message, { code: 'query-failed', hint });
 }

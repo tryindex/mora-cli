@@ -122,28 +122,6 @@ describe('init in a project that already exists', () => {
     );
   });
 
-  it('reports a plugin the project uses but this checkout does not have', async () => {
-    const root = await committedProject();
-    const configPath = path.join(root, 'mora.yaml');
-    await writeFile(
-      configPath,
-      `${await readFile(configPath, 'utf8')}\nplugins:\n  - publisher\n  - name: forecast\n    package: mora-plugin-forecast\n`,
-      'utf8',
-    );
-
-    const report = await join(root);
-
-    // A built-in is always usable; a third-party package lives in the gitignored
-    // .mora/plugins/, so a fresh clone has to be told to install it.
-    expect(report.plugins).toEqual([
-      { name: 'publisher', installed: true },
-      { name: 'forecast', installed: false },
-    ]);
-    expect(report.nextSteps[0]).toContain('mora plugin add forecast');
-    // Missing plugins are worth saying, but they are not a broken checkout.
-    expect(report.ok).toBe(true);
-  });
-
   it('explains a compile failure caused by data that is not in the checkout', async () => {
     const root = await committedProject();
     await rm(path.join(root, 'metrics/data/orders.csv'));
@@ -191,48 +169,17 @@ describe('committed artifacts', () => {
     expect(existsSync(path.join(root, ENV_EXAMPLE_FILENAME))).toBe(false);
   });
 
-  it('does not refresh Mora-owned docs; that is mora upgrade', async () => {
+  it('writes nothing at all in a checkout that needs no credentials', async () => {
     const root = await committedProject();
     const doc = path.join(root, '.agents', 'malloy.md');
-    await writeFile(doc, 'guidance from an older version of Mora\n', 'utf8');
+    await writeFile(doc, 'guidance someone edited by hand\n', 'utf8');
     const agents = await readFile(path.join(root, 'AGENTS.md'), 'utf8');
 
     const report = await join(root);
 
     expect(report.files).toEqual([]);
-    await expect(readFile(doc, 'utf8')).resolves.toBe('guidance from an older version of Mora\n');
+    await expect(readFile(doc, 'utf8')).resolves.toBe('guidance someone edited by hand\n');
     await expect(readFile(path.join(root, 'AGENTS.md'), 'utf8')).resolves.toBe(agents);
-    expect(report.upgrade.status).toBe('up-to-date');
-  });
-
-  it('reports when mora upgrade is pending', async () => {
-    const root = await committedProject();
-    const configPath = path.join(root, 'mora.yaml');
-    const original = await readFile(configPath, 'utf8');
-    await writeFile(configPath, original.replace(/^cli_version:.*/m, 'cli_version: 0.0.1'), 'utf8');
-
-    const report = await join(root);
-
-    expect(report.upgrade.status).toBe('pending');
-    expect(report.upgrade.projectVersion).toBe('0.0.1');
-    expect(report.nextSteps[0]).toContain('mora upgrade');
-  });
-
-  it('reports when the running CLI is behind the project stamp', async () => {
-    const root = await committedProject();
-    const configPath = path.join(root, 'mora.yaml');
-    const original = await readFile(configPath, 'utf8');
-    await writeFile(
-      configPath,
-      original.replace(/^cli_version:.*/m, 'cli_version: 99.0.0'),
-      'utf8',
-    );
-
-    const report = await join(root);
-
-    expect(report.upgrade.status).toBe('cli-behind');
-    expect(report.upgrade.projectVersion).toBe('99.0.0');
-    expect(report.nextSteps[0]).toMatch(/npm i -g/);
   });
 
   it('refreshes its own block in AGENTS.md under --force and leaves team conventions alone', async () => {

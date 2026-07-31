@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runQueryCommand } from '../src/commands/query.js';
 import { MoraError } from '../src/errors.js';
+import { indexDefinitions, resolveDefinition, type Vocabulary } from '../src/malloy/vocabulary.js';
 import { buildScaffold, type ScaffoldSpec, writeScaffold } from '../src/scaffold.js';
 import { writeOrdersModel } from './helpers/fixtures.js';
 
@@ -260,5 +261,116 @@ describe('runQueryCommand', () => {
 
     expect(report.model).toBe('metrics/refunds.malloy');
     expect(report.rows[0]).toHaveProperty('refunded');
+  });
+});
+
+describe('Malloy given as a file', () => {
+  it('runs a multi-line probe without any shell quoting', async () => {
+    const root = await scaffoldProject({ withModel: false });
+    await writeFile(path.join(root, 'metrics/sales.csv'), 'id,amount\n1,10\n2,20\n', 'utf8');
+    const probe = path.join(root, 'probe.malloy');
+    await writeFile(
+      probe,
+      [
+        "source: probe is duckdb.table('sales.csv') extend {}",
+        'run: probe -> { aggregate: rows is count() }',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const report = await runQueryCommand(root, undefined, { file: probe, json: true });
+
+    expect(report.ok).toBe(true);
+    expect(report.rows).toEqual([{ rows: 2 }]);
+    // A file makes a probe easier to write, not more trustworthy.
+    expect(report.reviewed).toBe(false);
+  });
+
+  it('reports the path it could not read as a usage error', async () => {
+    const root = await scaffoldProject();
+
+    const error = await moraError(
+      runQueryCommand(root, undefined, { file: path.join(root, 'absent.malloy'), json: true }),
+    );
+
+    expect(error.code).toBe('unreadable-expr');
+    expect(error.exitCode).toBe(2);
+  });
+
+  it('refuses an empty document rather than compiling nothing', async () => {
+    const root = await scaffoldProject();
+    const probe = path.join(root, 'empty.malloy');
+    await writeFile(probe, '\n\n', 'utf8');
+
+    const error = await moraError(runQueryCommand(root, undefined, { file: probe, json: true }));
+
+    expect(error.code).toBe('unreadable-expr');
+  });
+
+  it('refuses --expr and --file together', async () => {
+    const root = await scaffoldProject();
+
+    const error = await moraError(
+      runQueryCommand(root, undefined, {
+        expr: 'orders -> { aggregate: revenue }',
+        file: 'p.malloy',
+      }),
+    );
+
+    expect(error.code).toBe('conflicting-query');
+    expect(error.exitCode).toBe(2);
+  });
+});
+
+describe('resolveDefinition', () => {
+  const vocabulary: Vocabulary = {
+    sources: [
+      {
+        name: 'orders',
+        model: 'metrics/orders.malloy',
+        dimensions: [],
+        measures: [],
+        views: [{ name: 'by_month', type: 'view' }],
+        joins: [],
+      },
+      {
+        name: 'refunds',
+        model: 'metrics/refunds.malloy',
+        dimensions: [],
+        measures: [],
+        views: [{ name: 'by_month', type: 'view' }],
+        joins: [],
+      },
+    ],
+    queries: [{ name: 'monthly_revenue', model: 'metrics/orders.malloy' }],
+    failures: [],
+  };
+
+  const definitions = indexDefinitions(vocabulary);
+
+  it('resolves a named query', () => {
+    expect(resolveDefinition(definitions, 'monthly_revenue')).toMatchObject({
+      kind: 'query',
+      model: 'metrics/orders.malloy',
+    });
+  });
+
+  it('resolves a view qualified by its source', () => {
+    expect(resolveDefinition(definitions, 'orders.by_month')).toMatchObject({
+      kind: 'view',
+      source: 'orders',
+      view: 'by_month',
+    });
+  });
+
+  it('refuses to guess between two sources with the same view name', () => {
+    expect(() => resolveDefinition(definitions, 'by_month')).toThrowError(
+      /view on more than one source/,
+    );
+  });
+
+  it('lists what exists when a name does not', () => {
+    expect(() => resolveDefinition(definitions, 'nope')).toThrowError(/No definition named "nope"/);
   });
 });

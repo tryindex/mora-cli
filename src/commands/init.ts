@@ -27,8 +27,6 @@ import {
   writeEnvValues,
 } from '../env.js';
 import { ExitCode, MoraError } from '../errors.js';
-import { isPluginInstalled } from '../plugins/loader.js';
-import { isBuiltInPlugin } from '../plugins/registry.js';
 import {
   assertConfigParses,
   buildScaffold,
@@ -44,7 +42,6 @@ import {
   writeScaffold,
 } from '../scaffold.js';
 import { renderEnvFile } from '../templates/env.js';
-import { CLI_VERSION, PACKAGE_NAME } from '../version.js';
 import {
   type ConnectionTestResult,
   checkConnection,
@@ -53,7 +50,6 @@ import {
   gcloudAuthStep,
   type SettingFlags,
 } from './connection.js';
-import { assessUpgrade, type UpgradeStatus } from './upgrade.js';
 import { count, type ProjectValidation, printModelResults, validateProject } from './validate.js';
 
 const DEFAULT_MODELS_DIR = 'metrics';
@@ -112,22 +108,6 @@ export interface JoinReport extends ProjectValidation {
   };
   files: WrittenFile[];
   environment: EnvironmentReport;
-  /**
-   * Plugins the project records, and whether each one is usable here. Join mode
-   * never installs them: fetching a package a teammate committed a reference to
-   * is a decision the reader makes by naming it.
-   */
-  plugins: { name: string; installed: boolean }[];
-  /**
-   * How the running CLI compares to the project's `cli_version` stamp.
-   * Join mode never rewrites Mora-owned docs; it points at `mora upgrade`.
-   */
-  upgrade: {
-    status: UpgradeStatus;
-    projectVersion: string | null;
-    cliVersion: string;
-    message: string;
-  };
   nextSteps: string[];
 }
 
@@ -166,9 +146,9 @@ Two modes:
   connection, an empty models directory, and the docs your agent reads. In a
   directory that already has one, it joins that project instead: it creates a local
   ${ENV_FILENAME} from ${ENV_EXAMPLE_FILENAME}, reports which credentials are still
-  missing, notes when \`mora upgrade\` (or a newer CLI) is needed, and compiles the
-  committed models. Nothing the team owns is changed. That is what a teammate runs
-  after cloning. Pass --force to scaffold over an existing project.
+  missing, and compiles the committed models. Nothing the team owns is changed. That
+  is what a teammate runs after cloning. Pass --force to scaffold over an existing
+  project.
 
   Setting up interactively prompts for the connection's settings, writes credential
   values into ${ENV_FILENAME}, and opens the connection so you leave ready to query.
@@ -402,9 +382,8 @@ async function testNewConnection(context: {
 
 /**
  * Sets up a checkout of a project someone else built and committed. Nothing the
- * team owns is written: this creates the gitignored .env. Mora-owned docs are
- * refreshed by `mora upgrade`, not here, so a teammate on an older CLI cannot
- * silently rewrite committed guidance backwards.
+ * team owns is written: this creates the gitignored .env and compiles what is
+ * already there, so a teammate learns their checkout works before they touch it.
  */
 async function runJoin(root: string, flags: InitFlags): Promise<JoinReport> {
   const prose = !flags.json;
@@ -422,14 +401,6 @@ async function runJoin(root: string, flags: InitFlags): Promise<JoinReport> {
   const envFile = await ensureEnvFile(config);
   if (envFile) files.push(envFile);
 
-  const upgradeStatus = assessUpgrade(config);
-  const upgrade = {
-    status: upgradeStatus,
-    projectVersion: config.cliVersion ?? null,
-    cliVersion: CLI_VERSION,
-    message: upgradeMessage(upgradeStatus, config.cliVersion),
-  };
-
   const environment = describeEnvironment(
     config.requiredEnvVars,
     await readEnvFile(path.join(config.root, ENV_FILENAME)),
@@ -445,8 +416,6 @@ async function runJoin(root: string, flags: InitFlags): Promise<JoinReport> {
         : undefined,
   });
 
-  const plugins = describePlugins(config);
-
   const report: JoinReport = {
     ok: validation.summary.failed === 0 && environment.missing.length === 0,
     command: 'init',
@@ -455,10 +424,8 @@ async function runJoin(root: string, flags: InitFlags): Promise<JoinReport> {
     project: { name: config.projectName, models: config.modelsDir },
     files,
     environment,
-    plugins,
-    upgrade,
     ...validation,
-    nextSteps: joinNextSteps(config, environment, validation, upgradeStatus, plugins),
+    nextSteps: joinNextSteps(config, environment, validation),
   };
 
   if (prose) {
@@ -496,60 +463,12 @@ async function ensureEnvFile(config: MoraConfig): Promise<WrittenFile | undefine
   return { path: ENV_FILENAME, action: 'created' };
 }
 
-function upgradeMessage(status: UpgradeStatus, projectVersion: string | undefined): string {
-  switch (status) {
-    case 'up-to-date':
-      return `Project matches Mora ${CLI_VERSION}.`;
-    case 'pending':
-      return projectVersion
-        ? `Project is at ${projectVersion}; running Mora is ${CLI_VERSION}. Run \`mora upgrade\`.`
-        : `Project has no cli_version stamp. Run \`mora upgrade\` to refresh Mora-owned files.`;
-    case 'cli-behind':
-      return (
-        `Project is at ${projectVersion}; you are running Mora ${CLI_VERSION}. ` +
-        `Update with \`npm i -g ${PACKAGE_NAME}@latest\`.`
-      );
-  }
-}
-
-/**
- * A built-in plugin is always usable; a third-party one lives in the checkout's
- * own `.mora/plugins/`, which is gitignored and therefore empty in a fresh clone.
- */
-function describePlugins(config: MoraConfig): { name: string; installed: boolean }[] {
-  return config.plugins.map((entry) => ({
-    name: entry.name,
-    installed:
-      isBuiltInPlugin(entry.name) ||
-      (entry.package !== undefined && isPluginInstalled(config.root, entry.package)),
-  }));
-}
-
 function joinNextSteps(
   config: MoraConfig,
   environment: EnvironmentReport,
   validation: ProjectValidation,
-  upgradeStatus: UpgradeStatus,
-  plugins: { name: string; installed: boolean }[],
 ): string[] {
   const steps: string[] = [];
-
-  const uninstalled = plugins.filter((plugin) => !plugin.installed);
-  if (uninstalled.length > 0) {
-    steps.push(
-      `Install the plugins this project uses: ${uninstalled
-        .map((plugin) => `\`mora plugin add ${plugin.name}\``)
-        .join(', ')}.`,
-    );
-  }
-
-  if (upgradeStatus === 'pending') {
-    steps.push('Run `mora upgrade` to refresh Mora-owned docs and stamp this CLI version.');
-  } else if (upgradeStatus === 'cli-behind') {
-    steps.push(
-      `Update the CLI with \`npm i -g ${PACKAGE_NAME}@latest\`, then re-run \`mora init\`.`,
-    );
-  }
 
   if (environment.missing.length > 0) {
     steps.push(
@@ -563,10 +482,12 @@ function joinNextSteps(
     );
   }
   if (validation.models.length === 0) {
-    steps.push(`Add sources over your own tables in ${config.modelsDir}/.`);
+    steps.push(
+      `Run \`mora schema\` to see what the warehouse holds, then follow .agents/modeling.md to add sources in ${config.modelsDir}/.`,
+    );
   } else {
     steps.push(
-      `Read AGENTS.md, then run \`mora describe\` to see the vocabulary this team already agreed on.`,
+      `Read AGENTS.md, then read the models in ${config.modelsDir}/ to learn the vocabulary this team already agreed on.`,
     );
   }
   steps.push('Run `mora validate` after every model edit, and before opening a pull request.');
@@ -582,28 +503,8 @@ function reportJoin(report: JoinReport): void {
     );
   }
 
-  if (report.upgrade.status !== 'up-to-date') {
-    if (report.upgrade.status === 'cli-behind') {
-      prompts.log.warn(report.upgrade.message);
-    } else {
-      prompts.log.info(report.upgrade.message);
-    }
-  }
-
   if (report.environment.required.length > 0) {
     prompts.note(environmentLines(report.environment).join('\n'), 'Credentials');
-  }
-
-  if (report.plugins.length > 0) {
-    prompts.note(
-      report.plugins
-        .map(
-          (plugin) =>
-            `${plugin.installed ? pc.green('    ok') : pc.yellow(' missing')} ${plugin.name}`,
-        )
-        .join('\n'),
-      'Plugins',
-    );
   }
 
   printModelResults(report.models, report.project.models);
@@ -832,10 +733,6 @@ function nextSteps(
   );
   steps.push('Run `mora validate` after every model edit, and before opening a pull request.');
   steps.push('Point your agent at AGENTS.md so it queries through the semantic layer.');
-  steps.push(
-    'Run `mora plugin add publisher` when these models should also be served over ' +
-      'REST and MCP by Malloy Publisher.',
-  );
   return steps;
 }
 

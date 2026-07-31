@@ -20,8 +20,8 @@ export function renderMalloyGuide({
 }: AgentDocsOptions): string {
   return `# Malloy for Mora projects
 
-Mora maintains this file. Anything written here is replaced on upgrade, so put
-project-specific notes in AGENTS.md under "Team conventions" instead.
+Mora maintains this file. Anything written here is replaced when Mora rewrites
+it, so put project-specific notes in AGENTS.md under "Team conventions" instead.
 
 Read this before editing a \`.malloy\` file in \`${modelsDir}/\`.
 
@@ -87,16 +87,17 @@ run: orders -> {
   \`query:\` declaration is already a complete query and runs on its own.
 - The name before \`.table(...)\` is a connection declared in \`mora.yaml\`, and a
   project can have several. Run \`mora connection list\` to see which ones exist
-  before writing a source against a table you have not read from yet.
+  before writing a source against a table you have not read from yet, and
+  \`mora schema\` for the table names that connection accepts.
 
 ## Doc strings
 
 A line beginning with \`#"\` above a definition is its description. Unlike a
-\`//\` comment it is part of the model: \`mora describe\` prints it, matches search
-patterns against it, and a served model hands it to whoever is asking. It is how
-a definition explains itself to a reader who was not in the room when it was
-agreed, so it is the difference between a name someone trusts and a name someone
-re-derives by hand.
+\`//\` comment it is part of the model, so it travels with the definition to
+anything that reads the model rather than the file. It is how a definition
+explains itself to a reader who was not in the room when it was agreed, so it is
+the difference between a name someone trusts and a name someone re-derives by
+hand.
 
 \`\`\`malloy
 #" Revenue from completed orders only. Excludes refunds and pending payments,
@@ -120,14 +121,19 @@ expert would say it out loud: \`revenue\`, \`active_customers\`,
 
 ## Extending a model
 
-1. Run \`mora describe\` to see what already exists. Reuse before adding.
-2. Read the file in \`${modelsDir}/\` you are about to change.
+1. Read the files in \`${modelsDir}/\` to see what already exists. Reuse before
+   adding: a second measure that means what the first one means is how two
+   answers start disagreeing.
+2. Check anything you are about to assume about the data with
+   \`mora query -f\`, rather than trusting a column name.
 3. Add the dimension, measure or view next to related definitions, with a \`#"\`
    doc string on every new definition.
 4. Run \`mora validate\`. Because Malloy resolves table schemas while compiling,
    a pass means the model parses *and* the referenced columns really exist.
 5. Run the query with \`mora query\` and report the answer together with the
    definitions it used, so a human can check the logic and not just the number.
+6. Commit and open a pull request. Until it is reviewed, say that the definition
+   is proposed.
 
 ## Changing something that already exists
 
@@ -140,8 +146,9 @@ plainly in your answer, and name what else depends on it.
 
 /**
  * How to turn a warehouse nobody has modelled yet into a first semantic layer.
- * Separate from the Malloy reference because it answers a different question:
- * that one is "how do I write this", this one is "what should I write at all".
+ * This is the guide the tool exists for: the commands are here to serve it, and
+ * `.agents/malloy.md` answers "how do I write this" once this one has settled
+ * what is worth writing at all.
  */
 export function renderModelingGuide({
   connectionName,
@@ -150,19 +157,30 @@ export function renderModelingGuide({
 }: AgentDocsOptions): string {
   return `# Proposing a semantic layer
 
-Mora maintains this file. Anything written here is replaced on upgrade, so put
-project-specific notes in AGENTS.md under "Team conventions" instead.
+Mora maintains this file. Anything written here is replaced when Mora rewrites
+it, so put project-specific notes in AGENTS.md under "Team conventions" instead.
 
 Read this when the warehouse has tables that \`${modelsDir}/\` does not cover yet.
 For adding a measure to a source that already exists, \`.agents/malloy.md\` is the
 guide you want; this one is about proposing sources that do not exist.
 
+The shape of the work, and none of the steps are optional:
+
+\`\`\`
+1. mora schema        what the warehouse holds
+2. mora query -f      what is true of it, checked rather than assumed
+3. ask a human        which of it is worth modelling
+4. write the models   documented definitions, in ${modelsDir}/
+5. mora validate      they compile, so the columns really exist
+6. pull request       a human approves them, which is what makes them trustworthy
+\`\`\`
+
 ## When this applies
 
-\`mora describe\` came back empty or thin, and the question you were asked is
-about data the semantic layer does not describe. Check the connection works
-first (\`mora connection test\`): everything below reads the database, and a
-credential problem reported as a modelling problem wastes the reader's time.
+The models in \`${modelsDir}/\` do not describe the data you were asked about.
+Check the connection works first (\`mora connection test\`): everything below
+reads the database, and a credential problem reported as a modelling problem
+wastes the reader's time.
 
 ## 1. Discover, without saying anything yet
 
@@ -179,22 +197,27 @@ has to be guessed, and every name it prints goes inside
 \`${connectionName}.table('...')\` unchanged.
 
 Then query the data. Nothing is modelled yet, so declare a throwaway source in
-the expression itself and run against that. \`mora query -e\` takes a whole
-document, so the source and the query travel together and no file is touched:
+the probe itself and run against that. Unreviewed Malloy is a whole document, so
+the source and the query travel together and no model is touched. Write it to a
+file — a probe runs to several lines, and a file is easier to edit than a shell
+argument:
 
 \`\`\`bash
-mora query -e "source: probe is ${connectionName}.table('${sampleTablePath}') extend {}
-run: probe -> { aggregate: rows is count() }"
+cat > /tmp/probe.malloy <<'MALLOY'
+source: probe is ${connectionName}.table('${sampleTablePath}') extend {}
+run: probe -> { aggregate: rows is count() }
+MALLOY
+mora query -f /tmp/probe.malloy
 \`\`\`
 
 **Never infer meaning from a column name. Query the data.** A column called
 \`total\` may or may not include tax. A \`status\` column may have five values or
 five hundred. A foreign key may point at rows that are not there. Names suggest;
-only the data decides. Use \`mora query -e\` for each of these:
+only the data decides. Establish each of these before you propose anything:
 
 | What to establish | Why it changes the model |
 | --- | --- |
-| Duplicate keys: \`group_by\` the key, \`aggregate: count()\`, \`having: count() > 1\` | Duplicates make every \`sum()\` wrong, and silently. |
+| Duplicate keys: \`group_by\` the key, \`aggregate: count()\`, then filter to more than one | Duplicates make every \`sum()\` wrong, and silently. |
 | Join cardinality: is the foreign key unique on the other side? | Decides \`join_one\` against \`join_many\`. Guessing double-counts. |
 | Null rates per column | A column that is mostly null is not a dimension worth offering. |
 | Distinct values of each categorical | Five statuses group well; five hundred do not. |
@@ -202,21 +225,30 @@ only the data decides. Use \`mora query -e\` for each of these:
 | Related money columns, compared | Whether \`total\` is \`subtotal + tax\` decides which one revenue means. |
 | Candidate date columns, compared | Which timestamp is the canonical one to report on. |
 
-Keeping the same \`probe\` declaration at the top, the two that matter most read
-like this:
+The two that matter most read like this, keeping the same \`probe\` declaration
+at the top of the file:
 
-\`\`\`bash
-# Is the key unique? Anything but zero means sum() cannot be trusted.
-mora query -e "source: probe is ${connectionName}.table('${sampleTablePath}') extend {}
-run: probe -> { group_by: id; aggregate: rows is count() } -> { where: rows > 1; aggregate: duplicate_keys is count() }"
+\`\`\`malloy
+source: probe is ${connectionName}.table('${sampleTablePath}') extend {}
 
-# How many rows, and how many distinct values of the key you would join on.
-mora query -e "source: probe is ${connectionName}.table('${sampleTablePath}') extend {}
-run: probe -> { aggregate: rows is count(), customers is count(customer_id) }"
+// Is the key unique? Anything but zero means sum() cannot be trusted.
+run: probe
+  -> { group_by: id; aggregate: rows is count() }
+  -> { where: rows > 1; aggregate: duplicate_keys is count() }
 \`\`\`
 
-Every one of these is marked \`reviewed: false\`, which is correct: they are
-throwaway checks, not definitions. Nothing here belongs in the model as written.
+\`\`\`malloy
+source: probe is ${connectionName}.table('${sampleTablePath}') extend {}
+
+// How many rows, and how many distinct values of the key you would join on.
+run: probe -> { aggregate: rows is count(), customers is count(customer_id) }
+\`\`\`
+
+A short probe can still go on the command line
+(\`mora query -e "source: ... run: ..."\`), and stdin works too
+(\`mora query -e - < probe.malloy\`). Every one of these is marked
+\`reviewed: false\`, which is correct: they are throwaway checks, not
+definitions. Nothing here belongs in the model as written.
 
 Also worth knowing before you propose: how large each table is, and which tables
 are operational rather than analytical. A staging, audit or ETL table is not
@@ -269,7 +301,9 @@ mora query orders.revenue_by_month
 \`\`\`
 
 Spot-check each measure against something known before reporting anything. Then
-commit and open a pull request.
+commit and open a pull request. Say in it what you checked and what you found,
+including the surprises: the reviewer is deciding whether to trust these
+definitions, and those checks are most of the evidence.
 
 This last part is not a formality. Until a human reviews them, these definitions
 are *proposed*: they carry no more authority than the queries they replace, and
@@ -286,44 +320,35 @@ export function renderMoraGuide({
 }: AgentDocsOptions): string {
   return `# The mora command line
 
-Mora maintains this file. Anything written here is replaced on upgrade, so put
-project-specific notes in AGENTS.md under "Team conventions" instead.
+Mora maintains this file. Anything written here is replaced when Mora rewrites
+it, so put project-specific notes in AGENTS.md under "Team conventions" instead.
 
 Read this before running a \`mora\` command.
 
+There are five commands, and four of them are one loop: \`schema\` to see what
+the warehouse holds, \`query\` with unreviewed Malloy to check what is true of it,
+\`validate\` to prove a model you wrote compiles, \`query\` by name to run a
+definition someone reviewed. \`init\` and \`connection\` set the project up so the
+loop can run.
+
 Every command accepts \`--json\` for a machine-readable report instead of prose,
 and runs against the current directory unless told otherwise: \`init\` and
-\`validate\` take the project directory as their argument, while \`describe\`,
-\`query\`, \`schema\`, \`connection\` and \`plugin\` take it as \`-C <dir>\`, because
-their own argument is a name. Note the case: \`-C\` is the directory, and on
-\`mora schema\` a lower-case \`-c\` is the connection. Exit codes are the same
-everywhere: \`0\` success, \`1\` failure, \`2\` bad usage, \`3\` refused because files
-already exist.
+\`validate\` take the project directory as their argument, while \`query\`,
+\`schema\` and \`connection\` take it as \`-C <dir>\`, because their own argument is
+a name. Note the case: \`-C\` is the directory, and on \`mora schema\` a lower-case
+\`-c\` is the connection. Exit codes are the same everywhere: \`0\` success,
+\`1\` failure, \`2\` bad usage, \`3\` refused because files already exist.
 
-## mora describe [pattern]
+## Finding what the semantic layer already defines
 
-Lists the vocabulary: every source in \`${modelsDir}/\` with its dimensions,
-measures, views and joins, each with its doc string, plus the named queries that
-can be run directly. Start here, before writing any query, so an answer reuses a
-definition someone reviewed instead of inventing one.
+There is no command for this: read the \`.malloy\` files in \`${modelsDir}/\`.
+They are the vocabulary, they are in the checkout, and reading them gives you the
+definitions with their doc strings, their filters and their joins — more than any
+listing would. Do it before writing a query, so an answer reuses a definition
+someone reviewed instead of inventing one, and report the doc string of anything
+you use so the reader gets its caveats too.
 
-An optional \`pattern\` filters by name *and* by doc string, case-insensitively,
-keeping the source each match belongs to. Search the words a question uses, not
-just the identifier you expect:
-
-\`\`\`bash
-mora describe              # the whole vocabulary
-mora describe revenue      # matches on name or description
-mora describe refund       # finds a measure documented as excluding refunds
-\`\`\`
-
-\`--json\` reports
-\`{ ok, command: 'describe', pattern, sources, queries, summary }\`, where each
-source carries \`{ name, model, description, dimensions, measures, views, joins }\`
-and each entry within those carries \`{ name, type, description }\`. Report the
-description of any definition you use, so the reader gets its caveats too.
-
-## mora query <name> | -e "<malloy>"
+## mora query <name> | -f <file> | -e "<malloy>"
 
 Runs a query and prints the rows with the SQL that produced them.
 
@@ -331,16 +356,23 @@ Runs a query and prints the rows with the SQL that produced them.
 mora query monthly_revenue              # a query: declaration
 mora query orders.revenue_by_month      # a view, as source.view
 mora query revenue_by_month             # unambiguous view names resolve alone
-mora query -e "orders -> { aggregate: revenue }"
+mora query -f probe.malloy              # Malloy the model does not define
 \`\`\`
+
+A name runs reviewed logic. \`-f\` and \`-e\` run Malloy nobody has reviewed, and
+the result is marked \`reviewed: false\`: use them to check what is true of the
+data, then promote anything worth keeping to a named view or query and run it by
+name.
 
 Flags:
 
-- \`-e, --expr <malloy>\` runs Malloy that is not in the model. The result is
-  marked \`reviewed: false\`, because nobody has reviewed that logic. Use it to
-  explore, then promote anything worth keeping to a named view or query and run
-  it by name. It takes a whole document, not just a query, so an expression can
-  declare a source of its own and run against a table no model mentions yet:
+- \`-f, --file <path>\` runs a Malloy document from a file. Prefer this for
+  anything more than one line — a probe that declares its own source is several
+  lines long, and a file is easier to write and to edit than a quoted shell
+  argument.
+- \`-e, --expr <malloy>\` runs Malloy given inline; \`-e -\` reads the document from
+  stdin. Like \`-f\`, it takes a whole document rather than just a query, so it
+  can declare a source of its own and read a table no model mentions yet:
   \`mora query -e "source: probe is ${connectionName}.table('${sampleTablePath}') extend {}\\nrun: probe -> { aggregate: rows is count() }"\`.
 - \`--sql\` prints the generated SQL and runs nothing. Useful for checking what a
   definition compiles to before executing it.
@@ -358,13 +390,15 @@ An answer nobody can audit is not worth much.
 ## mora validate
 
 Compiles every model in \`${modelsDir}/\`. Run it after any edit to a \`.malloy\`
-file, and before opening a pull request. \`--json\` lists each model with its
-sources, named queries and any compile error.
+file, and before opening a pull request. Malloy resolves table schemas while
+compiling, so a pass means the model parses *and* the columns it names really
+exist. \`--json\` lists each model with its sources, named queries and any compile
+error.
 
 ## mora schema [tables...]
 
-Shows the *warehouse*, where \`describe\` shows the semantic layer. Reach for it
-when a question is about data no model in \`${modelsDir}/\` describes yet.
+Shows the *warehouse*, where the models in \`${modelsDir}/\` are the semantic
+layer over it. Reach for it when a question is about data no model describes yet.
 
 \`\`\`bash
 mora schema                              # every table the connection can read
@@ -395,9 +429,11 @@ credentials can see. An empty listing from a warehouse that clearly has data is 
 permissions problem, not an empty warehouse — the error says which role to ask
 for, and it is worth reporting rather than working around.
 
-Seeing a table is not the same as understanding it. Read
-\`.agents/modeling.md\` before proposing sources, and check the assumptions a
-model would rest on against the data with \`mora query -e\`.
+Seeing a table is not the same as understanding it. A schema cannot say whether a
+key has duplicates, whether a foreign key is unique on the other side, or whether
+\`total\` includes tax, and each of those changes the model. Read
+\`.agents/modeling.md\` before proposing sources, and check every one of those
+assumptions against the data with \`mora query -f\`.
 
 ## mora connection list | test [name] | add [name]
 
@@ -419,62 +455,13 @@ mora connection add exports --type duckdb --database exports.duckdb --yes
 Write a credential as \`\${VAR}\`, never as a literal: \`mora.yaml\` is committed.
 The command records the variable in \`.env.example\` and reports it under
 \`missingEnvVars\` if it is unset; the value itself belongs in \`.env\`, which only
-the person running it can write. Adding a connection does not make it usable by a
-Publisher server, which keeps its own config.
+the person running it can write.
 
 BigQuery uses Application Default Credentials when \`service_account_key_path\` is
 unset, so a \`test\` that fails on a keyless connection usually means
 \`gcloud auth application-default login\` has not been run for an account with
 access. Ask the person you are working with to run it; it needs a browser, so you
-cannot do it for them. Run without \`--project-id\`, a human is also shown a
-searchable list of the projects their credentials can query, narrowed to the ones
-holding a dataset they can read — which is why an unattended run must pass the
-project explicitly rather than expect a default.
-
-## mora plugin list | add <name> | remove <name>
-
-A plugin is an optional integration the project opts into. \`mora plugin list\`
-shows what Mora offers and what this project uses; each entry reports \`added\`
-(recorded in \`mora.yaml\`) separately from \`installed\` (usable in this checkout),
-because a third-party plugin's package lives in the gitignored \`.mora/plugins/\`
-and so is missing from a fresh clone.
-
-\`\`\`bash
-mora plugin list --json
-mora plugin add publisher            # serve these models with Malloy Publisher
-mora plugin remove publisher
-\`\`\`
-
-Adding writes files the project then owns, records the plugin in \`mora.yaml\`, and
-puts a note in the managed block of AGENTS.md. Commit the result. Re-running add
-is safe: a file that already matches is left alone, and a file the team has since
-edited is kept rather than overwritten.
-
-Removing deletes only the files the plugin would write today. If any of them has
-local edits the command refuses with exit \`3\` and writes nothing at all, so a
-failed remove never leaves the project half changed — pass \`--force\` to delete
-them anyway, or \`--keep-files\` to keep the files and only stop tracking the
-plugin. The report lists every file as \`deleted\`, \`kept-modified\`,
-\`kept-by-flag\` or \`missing\`.
-
-Do not add a plugin because a question was hard to answer; ask the person you are
-working with first. A plugin changes what the repository contains.
-
-## mora upgrade
-
-Brings this project up to date with the running Mora: refreshes \`.agents/\` and
-the managed block in \`AGENTS.md\`, applies any \`mora.yaml\` migrations, and
-stamps \`cli_version\`. Run it after updating the CLI, then commit the diff so the
-team upgrades together.
-
-\`\`\`bash
-mora upgrade              # apply
-mora upgrade --check      # report only; exit 1 when pending
-mora upgrade --json
-\`\`\`
-
-A project stamped by a *newer* Mora refuses to run upgrade on an older CLI —
-update the binary first. A missing stamp is treated as pending.
+cannot do it for them.
 
 ## mora init
 
@@ -492,9 +479,9 @@ run init again. \`--no-test\` skips the check and keeps the scaffold, which is t
 flag to use when the credential will only exist later.
 
 In a project that already has \`mora.yaml\`, this is a setup run: it creates a
-local \`.env\` from \`.env.example\`, reports which credentials are unset, notes
-when \`mora upgrade\` (or a newer CLI) is needed, and compiles the models. It does
-not touch models, configuration, or Mora-owned docs — those are \`mora upgrade\`'s
-job. Run it after cloning.
+local \`.env\` from \`.env.example\`, reports which credentials are unset, and
+compiles the committed models so the checkout is known to work. It touches
+nothing the team owns — not the models, not the configuration, not these docs.
+Run it after cloning.
 `;
 }

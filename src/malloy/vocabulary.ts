@@ -1,9 +1,15 @@
+/**
+ * The vocabulary a project's models declare: sources with their dimensions,
+ * measures, views and joins, and the named queries that can be run directly.
+ * Read out of the compiled models, and used by `mora query` to turn a name into
+ * something runnable. There is no command that prints it — the models are in the
+ * checkout, and reading them says more than a listing would.
+ */
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Annotations, Explore, Model, Runtime } from '@malloydata/malloy';
-import { ExitCode, MoraError } from '../errors.js';
-import type { RuntimeRequest } from './runtime.js';
-import { describeError, openRuntime } from './runtime.js';
+import { MoraError } from '../errors.js';
+import { describeError } from './runtime.js';
 
 export interface FieldDescription {
   name: string;
@@ -43,33 +49,12 @@ export interface Vocabulary {
   failures: ModelFailure[];
 }
 
-export interface DescribeRequest extends RuntimeRequest {
-  /** Absolute project root, which model paths are relative to. */
-  root: string;
-  /** Model files to read, relative to the root. */
-  modelPaths: readonly string[];
-}
-
 /**
- * Reads the vocabulary out of every model in the project. This is the same walk
- * `mora describe` prints and `mora query` resolves names against, so a name that
- * shows up in one is runnable by the other.
+ * Reads the vocabulary out of every model in the project. Runs over a runtime the
+ * caller owns, because a query needs both the vocabulary and the runtime that
+ * produced it, and opening DuckDB twice to get them would be wasteful.
  */
-export async function describeProject(request: DescribeRequest): Promise<Vocabulary> {
-  const opened = await openRuntime(request);
-  try {
-    return await describeModels(opened.runtime, request.root, request.modelPaths);
-  } finally {
-    await opened.close();
-  }
-}
-
-/**
- * The walk itself, over a runtime the caller owns. `mora query` needs both the
- * vocabulary and the runtime that produced it, and opening DuckDB twice to get
- * them would be wasteful.
- */
-export async function describeModels(
+export async function readVocabulary(
   runtime: Runtime,
   root: string,
   modelPaths: readonly string[],
@@ -157,50 +142,6 @@ function describeSource(explore: Explore, model: string): SourceDescription {
   return source;
 }
 
-/**
- * Restricts a vocabulary to definitions matching `pattern`, case-insensitively.
- * Descriptions are searched alongside names, so a question phrased in business
- * language ("refund") finds a definition named for the same thing in another
- * vocabulary (`net_revenue`, documented as excluding refunds).
- */
-export function filterVocabulary(vocabulary: Vocabulary, pattern: string): Vocabulary {
-  const needle = pattern.toLowerCase();
-  const matches = (entry: { name: string; description?: string }) =>
-    entry.name.toLowerCase().includes(needle) ||
-    (entry.description?.toLowerCase().includes(needle) ?? false);
-
-  const sources: SourceDescription[] = [];
-  for (const source of vocabulary.sources) {
-    // A source whose own name matches is shown whole: someone asking about
-    // "orders" wants the vocabulary of orders, not the one field called orders.
-    if (matches(source)) {
-      sources.push(source);
-      continue;
-    }
-
-    const narrowed: SourceDescription = {
-      ...source,
-      dimensions: source.dimensions.filter(matches),
-      measures: source.measures.filter(matches),
-      views: source.views.filter(matches),
-      joins: source.joins.filter(matches),
-    };
-    if (definitionCount(narrowed) > 0) sources.push(narrowed);
-  }
-
-  return {
-    sources,
-    queries: vocabulary.queries.filter(matches),
-    failures: vocabulary.failures,
-  };
-}
-
-export function definitionCount(source: SourceDescription): number {
-  return (
-    source.dimensions.length + source.measures.length + source.views.length + source.joins.length
-  );
-}
-
 /** A runnable definition: either a `query:` declaration or a view on a source. */
 export interface Definition {
   kind: 'query' | 'view';
@@ -262,10 +203,8 @@ export function resolveDefinition(definitions: readonly Definition[], name: stri
     code: 'unknown-definition',
     hint:
       definitions.length === 0
-        ? 'This project has no named queries or views yet. Add one, or run `mora query -e` with Malloy.'
-        : `Run \`mora describe\` to see the vocabulary. Available: ${definitions
-            .map((definition) => definition.name)
-            .join(', ')}.`,
+        ? 'This project has no named queries or views yet. Add one, or run `mora query -f` with Malloy of your own.'
+        : `Available: ${definitions.map((definition) => definition.name).join(', ')}.`,
   });
 }
 
@@ -273,14 +212,4 @@ function preferQuery(candidates: readonly Definition[]): Definition {
   return (
     candidates.find((definition) => definition.kind === 'query') ?? (candidates[0] as Definition)
   );
-}
-
-/** Raised when a project has nothing to describe, which is a usage problem. */
-export function assertHasModels(modelPaths: readonly string[], modelsDir: string): void {
-  if (modelPaths.length > 0) return;
-  throw new MoraError(`No .malloy files found in ${modelsDir}/.`, {
-    code: 'no-models',
-    exitCode: ExitCode.failure,
-    hint: `Add a model to ${modelsDir}/, or run \`mora init\` to scaffold an example.`,
-  });
 }

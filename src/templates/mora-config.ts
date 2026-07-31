@@ -13,8 +13,6 @@ export interface MoraConfigOptions {
   modelsDir: string;
   /** The one connection `mora init` declares. Others are added later. */
   connection: ScaffoldConnection;
-  /** Running Mora version, written as `cli_version` so upgrades can detect drift. */
-  cliVersion: string;
 }
 
 function indent(text: string, spaces: number): string {
@@ -70,7 +68,7 @@ function yamlScalar(value: string): string {
 }
 
 export function renderMoraConfig(options: MoraConfigOptions): string {
-  const { projectName, modelsDir, connection, cliVersion } = options;
+  const { projectName, modelsDir, connection } = options;
 
   // Exactly one connection, the one the reader asked for. A second is
   // `mora connection add`, which is less error-prone than uncommenting YAML and
@@ -87,8 +85,6 @@ export function renderMoraConfig(options: MoraConfigOptions): string {
 # credentials stay out of version control.
 
 version: 1
-# Written by Mora. Updated by \`mora upgrade\`; do not edit by hand.
-cli_version: ${cliVersion}
 
 project:
   name: ${projectName}

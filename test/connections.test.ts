@@ -7,7 +7,6 @@ import {
   runConnectionList,
   runConnectionTest,
 } from '../src/commands/connection.js';
-import { runDescribe } from '../src/commands/describe.js';
 import { runQueryCommand } from '../src/commands/query.js';
 import { runValidate } from '../src/commands/validate.js';
 import { loadConfig } from '../src/config.js';
@@ -97,16 +96,6 @@ describe('a project with more than one connection', () => {
       'metrics/orders.malloy',
       'metrics/regions.malloy',
     ]);
-  });
-
-  it('describes definitions from both connections in one vocabulary', async () => {
-    const root = await twoConnectionProject();
-
-    const report = await runDescribe(root, undefined, { json: true });
-
-    expect(report.ok).toBe(true);
-    expect(report.sources.map((source) => source.name)).toEqual(['orders', 'regions']);
-    expect(report.queries.map((query) => query.name)).toContain('regional_totals');
   });
 
   it('runs a query against a connection that is not the default', async () => {

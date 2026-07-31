@@ -49,8 +49,8 @@ Agent usage:
   cover yet, and run it with no argument first: the listing is where valid names
   come from, so a name never has to be guessed. Every name it prints goes inside
   \`<connection>.table('...')\` unchanged. Naming several tables at once reads
-  them in one pass. This shows the warehouse, not the semantic layer; run
-  \`mora describe\` for the definitions the project already has. Exit codes: ${ExitCode.ok} read,
+  them in one pass. This shows the warehouse, not the semantic layer over it;
+  read the models for the definitions that exist. Exit codes: ${ExitCode.ok} read,
   ${ExitCode.failure} the connection or a table could not be read, ${ExitCode.usage} bad usage.
 
 Examples:
@@ -196,7 +196,7 @@ function listNextSteps(
 
   const steps = [
     `Run \`mora schema ${tables[0]?.name}\` to see its columns. Name several tables to read them in one pass.`,
-    'Read .agents/modeling.md before proposing sources, then check assumptions with `mora query -e` against the data.',
+    'Read .agents/modeling.md before proposing sources, then check assumptions with `mora query -f` against the data.',
   ];
   if (truncated) {
     steps.push('More tables exist than were listed. Narrow the listing with --pattern.');
@@ -215,7 +215,7 @@ function describeNextSteps(connectionName: string, schemas: TableSchema[]): stri
   const first = schemas[0]?.name;
   return [
     `Write a source: \`source: my_table is ${connectionName}.table('${first}')\`, with a \`#"\` doc string on every definition.`,
-    'Verify keys, join cardinality and null rates with `mora query -e` before proposing measures. Never infer them from column names.',
+    'Verify keys, join cardinality and null rates with `mora query -f` before proposing measures. Never infer them from column names.',
     'Run `mora validate` when the model is written, then open a pull request so a human reviews the definitions.',
   ];
 }
