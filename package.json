@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "mora": "./dist/cli.js"
+    "mora": "dist/cli.js"
   },
   "files": [
     "dist",
