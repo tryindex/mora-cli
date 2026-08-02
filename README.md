@@ -139,6 +139,12 @@ can actually see — being told nothing because most of the project is none of y
 business is not an answer. If even that is denied, the error names the role to ask
 for.
 
+An empty listing says why it is empty. A DuckDB connection opens whether or not
+the directory it reads holds anything, so "no tables" usually means the
+`working_directory` is not where the data is: the report names the directory it
+read, names the directories in the project that do hold data files, and gives the
+one-line change to `mora.yaml` that fixes it.
+
 **Seeing a table is not the same as understanding it.** A schema cannot tell you
 whether a key has duplicates, whether a foreign key is unique on the other side,
 or whether `total` includes tax — and each of those changes the model. That is
@@ -181,6 +187,11 @@ A probe is several lines, so a file beats a quoted shell argument; `-e` still
 takes it inline and `-e -` reads stdin. These results are marked
 `reviewed: false` and carry a visible warning, which is correct — a throwaway
 check is not a definition.
+
+One document asks one question. Malloy runs only the last query in a document, so
+a file with several `run:` statements is refused rather than answering one of
+them and looking like it answered all of them. Combine the checks into a single
+`run:` with several aggregates, or write a document per question.
 
 **Answering with logic someone approved.** A name runs a committed definition,
 either a `query:` declaration or a view written as `source.view`:

@@ -1,10 +1,18 @@
+import path from 'node:path';
 import * as prompts from '@clack/prompts';
 import type { Command } from 'commander';
 import pc from 'picocolors';
 import { loadConfig, type MoraConfig, type SupportedConnectionConfig } from '../config.js';
 import { DATABASE_IDS } from '../databases.js';
 import { ExitCode, MoraError } from '../errors.js';
-import { describeTables, listTables, type TableEntry, type TableSchema } from '../malloy/schema.js';
+import {
+  type DataDirectory,
+  describeTables,
+  findDataOutside,
+  listTables,
+  type TableEntry,
+  type TableSchema,
+} from '../malloy/schema.js';
 import { requireConnection } from '../project.js';
 import { CONFIG_FILENAME } from '../scaffold.js';
 import { count } from './validate.js';
@@ -29,6 +37,18 @@ export interface SchemaReport {
   truncated: boolean;
   /** Columns of each named table, or null when listing. */
   schemas: TableSchema[] | null;
+  /**
+   * Directory a file-backed connection resolves relative table paths from,
+   * relative to the project root. Null for a warehouse, which reads a catalog
+   * rather than a directory, and when tables were named.
+   */
+  readsFrom: string | null;
+  /**
+   * Directories holding data this connection cannot reach, when the listing came
+   * back empty. Null whenever the question does not arise, which includes every
+   * listing that found something.
+   */
+  dataElsewhere: DataDirectory[] | null;
   nextSteps: string[];
 }
 
@@ -119,6 +139,17 @@ async function listMode(
   pattern: string | undefined,
 ): Promise<SchemaReport> {
   const { tables, truncated } = await listTables(connection, config.root, pattern);
+  // A warehouse connection reads a catalog rather than a directory, so it has no
+  // such place to name and nothing local to go looking for.
+  const files = connection.type === 'duckdb' ? connection : null;
+  const readsFrom = files ? relativeTo(config.root, files.workingDirectory) : null;
+
+  // Only worth walking the project when the listing came back empty and nothing
+  // was filtered out: a listing that found tables has answered the question.
+  const dataElsewhere =
+    files && tables.length === 0 && !pattern
+      ? await findDataOutside(config.root, files.workingDirectory)
+      : null;
 
   return {
     ok: true,
@@ -129,7 +160,16 @@ async function listMode(
     tables,
     truncated,
     schemas: null,
-    nextSteps: listNextSteps(connection.name, tables, truncated, pattern),
+    readsFrom,
+    dataElsewhere,
+    nextSteps: listNextSteps({
+      connectionName: connection.name,
+      tables,
+      truncated,
+      pattern,
+      readsFrom,
+      dataElsewhere,
+    }),
   };
 }
 
@@ -152,8 +192,16 @@ async function describeMode(
     tables: null,
     truncated: false,
     schemas,
+    readsFrom: null,
+    dataElsewhere: null,
     nextSteps: describeNextSteps(connection.name, schemas),
   };
+}
+
+/** An absolute directory as it would be written in mora.yaml. */
+function relativeTo(root: string, directory: string): string {
+  const relative = path.relative(root, directory).split(path.sep).join('/');
+  return relative === '' ? '.' : relative;
 }
 
 /**
@@ -180,18 +228,30 @@ function selectConnection(config: MoraConfig, name: string | undefined): Support
   return found;
 }
 
-function listNextSteps(
-  connectionName: string,
-  tables: TableEntry[],
-  truncated: boolean,
-  pattern: string | undefined,
-): string[] {
+interface ListContext {
+  connectionName: string;
+  tables: TableEntry[];
+  truncated: boolean;
+  pattern: string | undefined;
+  readsFrom: string | null;
+  dataElsewhere: DataDirectory[] | null;
+}
+
+function listNextSteps({
+  connectionName,
+  tables,
+  truncated,
+  pattern,
+  readsFrom,
+  dataElsewhere,
+}: ListContext): string[] {
   if (tables.length === 0) {
-    return [
-      pattern
-        ? `Nothing matched "${pattern}". Run \`mora schema\` without --pattern to see everything.`
-        : `This connection has no tables to read. Check \`mora connection test ${connectionName}\`, and that the data it points at exists.`,
-    ];
+    if (pattern) {
+      return [
+        `Nothing matched "${pattern}". Run \`mora schema\` without --pattern to see everything.`,
+      ];
+    }
+    return emptyListingSteps(connectionName, readsFrom, dataElsewhere);
   }
 
   const steps = [
@@ -202,6 +262,55 @@ function listNextSteps(
     steps.push('More tables exist than were listed. Narrow the listing with --pattern.');
   }
   return steps;
+}
+
+/**
+ * Why an empty listing is empty, and what to do about it.
+ *
+ * This deliberately does not suggest `mora connection test`: a DuckDB connection
+ * opens whether or not the directory it reads holds anything, so that check
+ * passes and sends the reader looking in the wrong place.
+ */
+function emptyListingSteps(
+  connectionName: string,
+  readsFrom: string | null,
+  dataElsewhere: DataDirectory[] | null,
+): string[] {
+  if (readsFrom === null) {
+    return [
+      `${connectionName} returned no tables. Check that \`project_id\` on it names the project you meant, and that these credentials can see at least one dataset in that project.`,
+    ];
+  }
+
+  const reads = `${connectionName} reads relative table paths from ${label(readsFrom)}, which holds no data files`;
+  const found = dataElsewhere?.[0];
+
+  if (!found) {
+    return [
+      `${reads}, and neither does anywhere else in this project.`,
+      `Put a CSV or Parquet file there, or set \`working_directory\` on the ${connectionName} connection in ${CONFIG_FILENAME} to a directory that has one.`,
+    ];
+  }
+
+  const others = dataElsewhere.slice(1).map((entry) => label(entry.directory));
+  const alsoIn = others.length > 0 ? ` Data also sits in ${others.join(' and ')}.` : '';
+
+  return [
+    `${reads}. ${label(found.directory)} holds ${count(found.fileCount, 'data file')}.${alsoIn}`,
+    `Set \`working_directory: ${found.directory}\` on the ${connectionName} connection in ${CONFIG_FILENAME}, or move the data under ${label(readsFrom)}.`,
+    'Then run `mora schema` again to see the names a source can read.',
+  ];
+}
+
+/** A directory as a reader would refer to it, `.` being the project root. */
+function label(directory: string): string {
+  return directory === '.' ? 'the project root' : `${directory}/`;
+}
+
+function emptyListingWarning(report: SchemaReport): string {
+  if (report.pattern) return `Nothing matches "${report.pattern}".`;
+  if (report.readsFrom === null) return `${report.connection.name} has no tables to read.`;
+  return `${report.connection.name} has no tables to read in ${label(report.readsFrom)}.`;
 }
 
 function describeNextSteps(connectionName: string, schemas: TableSchema[]): string[] {
@@ -234,11 +343,7 @@ function reportProse(report: SchemaReport): void {
   } else {
     const tables = report.tables ?? [];
     if (tables.length === 0) {
-      prompts.log.warn(
-        report.pattern
-          ? `Nothing matches "${report.pattern}".`
-          : `${report.connection.name} has no tables to read.`,
-      );
+      prompts.log.warn(emptyListingWarning(report));
     } else {
       const width = Math.max(...tables.map((entry) => entry.name.length));
       prompts.note(

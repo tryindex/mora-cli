@@ -76,7 +76,12 @@ Examples:
   modelling it. A probe is usually several lines, so write it to a file rather
   than fighting shell quoting:
   $ mora query -f probe.malloy
-  $ mora query -e - < probe.malloy`,
+  $ mora query -e - < probe.malloy
+
+One query per document:
+  Malloy runs only the last query in a document, so a document with several
+  \`run:\` statements is refused rather than answered in part. Ask one question per
+  document, or combine the checks into one \`run:\` with several aggregates.`,
     )
     .action(async (name: string | undefined, flags: QueryFlags) => {
       const report = await runQueryCommand(flags.directory, name, flags);

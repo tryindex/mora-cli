@@ -320,6 +320,28 @@ Recorded so they are not rediscovered by accident:
   database rejects a view that `validate` passed. Do not "simplify" it back —
   `test/query.test.ts` has a joined view guarding this, and the failure it
   catches looks like a broken model rather than a broken query path.
+- **One `run:` per document, refused rather than executed in part.** Malloy
+  materializes only a document's last query, so a probe stacking several checks
+  answered one question while looking like it answered all of them — an agent
+  batching five reads five answers off a result that held one. Running them all
+  was the alternative, and it would have put a `results` array in the report and
+  made top-level `rows` and `sql` mean whichever one you were not asking about;
+  the ambiguity is what caused the bug. Counting is a scan for the `run:` token
+  outside comments and strings, *not* `Parse.symbols`: that walker returns nothing
+  at all for a query containing a `nest:`, which would refuse a good probe. A
+  document with no `run:` is refused too, because Malloy reports that as
+  "Internal compiler error ... Model has no queries" and asks the reader to file a
+  bug against Malloy for a missing keyword.
+- **An empty listing explains itself; the working directory default stays put.**
+  `mora schema` used to answer an empty DuckDB listing with "check
+  `mora connection test`", which passes for any DuckDB connection whether or not
+  it can see data — a check that cannot fail is worse than no advice. So the
+  report carries `readsFrom` and `dataElsewhere`, naming the directory it walked
+  and the directories that do hold data, and the fix is a `working_directory`
+  edit. Pointing `init` at the data instead would contradict table paths
+  resolving from the models directory, and that portability is worth more than
+  saving one edit. The project is only walked when the listing is empty and
+  unfiltered, so a listing that found something pays nothing.
 
 ## Where this goes next
 

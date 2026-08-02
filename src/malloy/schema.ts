@@ -202,6 +202,42 @@ async function listDuckDbTables(
   return cap(filterByName(entries, pattern));
 }
 
+export interface DataDirectory {
+  /** Directory relative to the project root, as `working_directory` would name it. */
+  directory: string;
+  fileCount: number;
+}
+
+/**
+ * Enough directories to point at the right one, few enough to read in a sentence.
+ */
+const MAX_DATA_DIRECTORIES = 5;
+
+/**
+ * Directories under the project root holding data files the connection does not
+ * read. A DuckDB connection that lists nothing has almost always been pointed at
+ * a directory the data is not in, and naming the directory that does have it is
+ * the difference between a dead end and a fix.
+ */
+export async function findDataOutside(
+  root: string,
+  workingDirectory: string,
+): Promise<DataDirectory[]> {
+  const read = path.relative(root, workingDirectory).split(path.sep).join('/');
+  const counts = new Map<string, number>();
+
+  for (const entry of await listDataFiles(root)) {
+    if (read === '' || entry.name.startsWith(`${read}/`)) continue;
+    const directory = path.posix.dirname(entry.name);
+    counts.set(directory, (counts.get(directory) ?? 0) + 1);
+  }
+
+  return [...counts]
+    .map(([directory, fileCount]) => ({ directory, fileCount }))
+    .sort((a, b) => b.fileCount - a.fileCount || a.directory.localeCompare(b.directory))
+    .slice(0, MAX_DATA_DIRECTORIES);
+}
+
 async function listDataFiles(workingDirectory: string): Promise<TableEntry[]> {
   const found: TableEntry[] = [];
 

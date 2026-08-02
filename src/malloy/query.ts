@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { QueryMaterializer, Runtime } from '@malloydata/malloy';
-import { MoraError } from '../errors.js';
+import { ExitCode, MoraError } from '../errors.js';
 import { looksLikeMissingData } from './compile.js';
 import { describeError, openRuntime, type RuntimeRequest } from './runtime.js';
 import {
@@ -50,6 +50,10 @@ export interface QueryOutcome {
 }
 
 export async function runQuery(request: QueryRequest): Promise<QueryOutcome> {
+  // Checked before anything is opened: a document that cannot produce one answer
+  // should cost nothing to be turned away.
+  if (request.expr !== undefined) assertOneQuery(asQueryDocument(request.expr));
+
   const opened = await openRuntime(request);
 
   try {
@@ -167,8 +171,107 @@ function adHoc(runtime: Runtime, request: QueryRequest, vocabulary: Vocabulary):
   };
 }
 
+/**
+ * Refuses a document that does not run exactly one query.
+ *
+ * Malloy compiles the whole document and materializes only its last query, so a
+ * probe stacking several `run:` statements comes back as one result with nothing
+ * to say the others were dropped. Someone batching five checks would read five
+ * answers off a result that only ever held one, which is the quiet kind of wrong
+ * this tool exists to prevent.
+ */
+function assertOneQuery(document: string): void {
+  const code = withoutCommentsOrStrings(document);
+  const runs = (code.match(RUN_STATEMENT) ?? []).length;
+  if (runs === 1) return;
+
+  if (runs > 1) {
+    throw new MoraError(
+      `This document has ${runs} \`run:\` statements, and a query runs one of them.`,
+      {
+        code: 'multiple-queries',
+        exitCode: ExitCode.usage,
+        hint:
+          'Malloy would return only the last one and say nothing about the rest. Ask one ' +
+          'question per document, or combine them into a single `run:` with several aggregates.',
+      },
+    );
+  }
+
+  const declared = code.match(NAMED_QUERY)?.[1];
+  throw new MoraError('This document has no `run:` statement, so there is nothing to run.', {
+    code: 'no-query-in-document',
+    exitCode: ExitCode.usage,
+    hint: declared
+      ? `It declares \`${declared}\` but never runs it. Add \`run: ${declared}\`, or put the query in a model and run it by name.`
+      : 'Add one, such as `run: my_source -> { aggregate: rows is count() }`.',
+  });
+}
+
+/**
+ * `run` is a statement keyword, so a `run:` token that is not inside a comment or
+ * a string is always a statement, wherever on the line it happens to sit. Two of
+ * them on one line is as much a stacked probe as two on separate lines.
+ */
+const RUN_STATEMENT = /\brun\s*:/g;
+
+const NAMED_QUERY = /\bquery\s*:\s*(`[^`]+`|[A-Za-z_]\w*)/;
+
 function declaresSource(document: string): boolean {
-  return /(^|\n)\s*source\s*:/.test(document);
+  return /(^|\n)\s*source\s*:/.test(withoutCommentsOrStrings(document));
+}
+
+/**
+ * The document with everything that is not code blanked out: block comments,
+ * comments to end of line (`//` and `--`), annotations and doc strings (`#`), and
+ * string literals. Malloy's own parser would be the obvious way to find the
+ * statements instead, but its symbol walker returns nothing at all for a query
+ * containing a `nest:`, which would refuse a perfectly good probe.
+ *
+ * Blanked rather than deleted, so that nothing written on two lines is joined
+ * into a token nobody wrote.
+ */
+function withoutCommentsOrStrings(document: string): string {
+  let code = '';
+  let index = 0;
+
+  while (index < document.length) {
+    const character = document[index] as string;
+    const pair = document.slice(index, index + 2);
+    let end: number;
+
+    if (pair === '/*') {
+      const close = document.indexOf('*/', index + 2);
+      end = close === -1 ? document.length : close + 2;
+    } else if (pair === '//' || pair === '--' || character === '#') {
+      const newline = document.indexOf('\n', index);
+      end = newline === -1 ? document.length : newline;
+    } else if (character === "'" || character === '"') {
+      end = endOfString(document, index);
+    } else {
+      code += character;
+      index += 1;
+      continue;
+    }
+
+    code += document.slice(index, end).replace(/[^\n]/g, ' ');
+    index = end;
+  }
+
+  return code;
+}
+
+/** Just past the closing quote, or the end of an unterminated string. */
+function endOfString(document: string, start: number): number {
+  const quote = document[start];
+  for (let index = start + 1; index < document.length; index += 1) {
+    if (document[index] === '\\') {
+      index += 1;
+      continue;
+    }
+    if (document[index] === quote) return index + 1;
+  }
+  return document.length;
 }
 
 /**

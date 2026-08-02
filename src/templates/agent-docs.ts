@@ -225,6 +225,24 @@ only the data decides. Establish each of these before you propose anything:
 | Related money columns, compared | Whether \`total\` is \`subtotal + tax\` decides which one revenue means. |
 | Candidate date columns, compared | Which timestamp is the canonical one to report on. |
 
+Ask one question per document. Malloy runs only the last query in a document, so a
+file with several \`run:\` statements is refused rather than answered in part —
+either rewrite the file for each question, or fold the checks into a single
+\`run:\` with several aggregates, which is often the better probe anyway:
+
+\`\`\`malloy
+source: probe is ${connectionName}.table('${sampleTablePath}') extend {}
+
+// Several checks, one answer: row count against distinct keys catches
+// duplicates, and the null counts say which columns are worth offering.
+run: probe -> {
+  aggregate:
+    rows is count()
+    distinct_ids is count(id)
+    null_region is count() { where: region = null }
+}
+\`\`\`
+
 The two that matter most read like this, keeping the same \`probe\` declaration
 at the top of the file:
 
@@ -379,6 +397,12 @@ Flags:
 - \`--limit <n>\` caps the rows returned. Keep it small: rows land in your
   context.
 
+**One \`run:\` per document.** Malloy runs only the last query in a document, so a
+file with several \`run:\` statements is refused (exit \`2\`, code
+\`multiple-queries\`) rather than answering one question and looking like it
+answered all of them. Ask one question per document, or combine the checks into a
+single \`run:\` with several aggregates.
+
 \`--json\` reports \`{ ok, command: 'query', name, reviewed, model, sql, executed,
 rows, rowCount, truncated, nextSteps }\`. \`executed\` is false under \`--sql\`, so
 an empty \`rows\` is never mistaken for a query that matched nothing. An unknown
@@ -414,7 +438,7 @@ cached copy of any of this and there does not need to be — the listing is chea
 and the answer stays in your context for as long as you are working.
 
 \`--json\` reports \`{ ok, command: 'schema', connection, pattern, tables,
-truncated, schemas, nextSteps }\`. Exactly one of \`tables\` and \`schemas\` is
+truncated, schemas, readsFrom, dataElsewhere, nextSteps }\`. Exactly one of \`tables\` and \`schemas\` is
 filled in: \`tables\` when listing, each entry \`{ name, schema, kind }\` where
 \`kind\` is \`table\`, \`view\` or \`file\`; \`schemas\` when tables were named, each
 entry \`{ name, columns, error }\` with columns as \`{ name, type }\` in Malloy
@@ -428,6 +452,12 @@ well as registered tables, and a BigQuery connection lists the datasets the
 credentials can see. An empty listing from a warehouse that clearly has data is a
 permissions problem, not an empty warehouse — the error says which role to ask
 for, and it is worth reporting rather than working around.
+
+An empty listing from a DuckDB connection usually means it is pointed at the
+wrong directory. \`readsFrom\` says which directory it resolves relative table
+paths from, and \`dataElsewhere\` names the directories in the project that do hold
+data files, so the fix is to set \`working_directory\` on the connection in
+\`mora.yaml\` to one of them. Do not read this as an empty database.
 
 Seeing a table is not the same as understanding it. A schema cannot say whether a
 key has duplicates, whether a foreign key is unique on the other side, or whether

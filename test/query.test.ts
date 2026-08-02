@@ -323,6 +323,135 @@ describe('Malloy given as a file', () => {
   });
 });
 
+/**
+ * Malloy runs only the last query in a document, so a probe that stacks several
+ * would answer one question and look like it answered all of them.
+ */
+describe('one query per document', () => {
+  /** A project with data but no model, which is what a probe is written against. */
+  async function probeProject(): Promise<string> {
+    const root = await scaffoldProject({ withModel: false });
+    await writeFile(path.join(root, 'metrics/sales.csv'), 'id,amount\n1,10\n2,20\n', 'utf8');
+    return root;
+  }
+
+  async function probe(root: string, ...lines: string[]): Promise<string> {
+    const file = path.join(root, 'probe.malloy');
+    await writeFile(file, `${lines.join('\n')}\n`, 'utf8');
+    return file;
+  }
+
+  it('refuses a document that stacks two run statements', async () => {
+    const root = await probeProject();
+    const file = await probe(
+      root,
+      "source: probe is duckdb.table('sales.csv') extend {}",
+      'run: probe -> { aggregate: rows is count() }',
+      'run: probe -> { aggregate: total is amount.sum() }',
+    );
+
+    const error = await moraError(runQueryCommand(root, undefined, { file, json: true }));
+
+    expect(error.code).toBe('multiple-queries');
+    expect(error.exitCode).toBe(2);
+    expect(error.message).toContain('2');
+    expect(error.hint).toContain('one question per document');
+  });
+
+  it('counts two run statements on the same line, which Malloy accepts', async () => {
+    const root = await probeProject();
+    const file = await probe(
+      root,
+      "source: probe is duckdb.table('sales.csv') extend {}",
+      'run: probe -> { aggregate: rows is count() } run: probe -> { aggregate: n is count() }',
+    );
+
+    const error = await moraError(runQueryCommand(root, undefined, { file, json: true }));
+
+    expect(error.code).toBe('multiple-queries');
+  });
+
+  it('does not count a run statement that has been commented out', async () => {
+    const root = await probeProject();
+    const file = await probe(
+      root,
+      "source: probe is duckdb.table('sales.csv') extend {}",
+      '// run: probe -> { aggregate: total is amount.sum() }',
+      '-- run: probe -> { aggregate: total is amount.sum() }',
+      '/*',
+      'run: probe -> { aggregate: total is amount.sum() }',
+      '*/',
+      'run: probe -> { aggregate: rows is count() }',
+    );
+
+    const report = await runQueryCommand(root, undefined, { file, json: true });
+
+    expect(report.ok).toBe(true);
+    expect(report.rows).toEqual([{ rows: 2 }]);
+  });
+
+  it('does not count the word run inside a string or a column name', async () => {
+    const root = await probeProject();
+    await writeFile(path.join(root, 'metrics/runs.csv'), 'run_id,note\n1,run: nope\n', 'utf8');
+    const file = await probe(
+      root,
+      "source: probe is duckdb.table('runs.csv') extend {}",
+      "run: probe -> { group_by: run_id; aggregate: n is count() { where: note != 'run: nope' } }",
+    );
+
+    const report = await runQueryCommand(root, undefined, { file, json: true });
+
+    expect(report.ok).toBe(true);
+    expect(report.rows).toEqual([{ run_id: '1', n: 0 }]);
+  });
+
+  /**
+   * Malloy's own symbol walker reports no statements at all for a query holding a
+   * `nest:`, so counting through it would refuse this.
+   */
+  it('runs a single query that nests another', async () => {
+    const root = await probeProject();
+    const file = await probe(
+      root,
+      "source: probe is duckdb.table('sales.csv') extend {}",
+      'run: probe -> {',
+      '  aggregate: rows is count()',
+      '  nest: by_id is { group_by: id; aggregate: total is amount.sum() }',
+      '}',
+    );
+
+    const report = await runQueryCommand(root, undefined, { file, json: true });
+
+    expect(report.ok).toBe(true);
+    expect(report.rows[0]).toHaveProperty('by_id');
+  });
+
+  it('names the query a document declares but never runs', async () => {
+    const root = await probeProject();
+    const file = await probe(
+      root,
+      "source: probe is duckdb.table('sales.csv') extend {}",
+      'query: totals is probe -> { aggregate: total is amount.sum() }',
+    );
+
+    const error = await moraError(runQueryCommand(root, undefined, { file, json: true }));
+
+    expect(error.code).toBe('no-query-in-document');
+    expect(error.exitCode).toBe(2);
+    expect(error.hint).toContain('run: totals');
+  });
+
+  it('refuses a document that declares a source and nothing else', async () => {
+    const root = await probeProject();
+    const file = await probe(root, "source: probe is duckdb.table('sales.csv') extend {}");
+
+    const error = await moraError(runQueryCommand(root, undefined, { file, json: true }));
+
+    expect(error.code).toBe('no-query-in-document');
+    expect(error.hint).toContain('run:');
+  });
+});
+
 describe('resolveDefinition', () => {
   const vocabulary: Vocabulary = {
     sources: [

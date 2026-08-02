@@ -138,6 +138,94 @@ describe('runSchema listing', () => {
       /No connection called "nope"/,
     );
   });
+
+  it('leaves the search for data elsewhere undone when the listing found tables', async () => {
+    const root = await scaffoldProject();
+
+    const report = await runSchema(root, [], { json: true });
+
+    expect(report.readsFrom).toBe('metrics');
+    // A listing that found something has already answered the question, so the
+    // project is never walked.
+    expect(report.dataElsewhere).toBeNull();
+  });
+});
+
+/**
+ * An empty listing used to suggest `mora connection test`, which passes for any
+ * DuckDB connection whether or not it can see data, so the reader was sent to a
+ * check that cannot fail.
+ */
+describe('runSchema on an empty listing', () => {
+  it('names the directory that holds the data the connection cannot reach', async () => {
+    const root = await scaffoldProject({ withModel: false });
+    await mkdir(path.join(root, 'warehouse'), { recursive: true });
+    await writeFile(path.join(root, 'warehouse/orders.csv'), 'id\n1\n', 'utf8');
+    await writeFile(path.join(root, 'warehouse/customers.csv'), 'id\n1\n', 'utf8');
+
+    const report = await runSchema(root, [], { json: true });
+
+    // Nowhere to read is an empty answer, not a failure of the command.
+    expect(report.ok).toBe(true);
+    expect(report.tables).toEqual([]);
+    expect(report.readsFrom).toBe('metrics');
+    expect(report.dataElsewhere).toEqual([{ directory: 'warehouse', fileCount: 2 }]);
+
+    const steps = report.nextSteps.join('\n');
+    expect(steps).toContain('metrics/');
+    expect(steps).toContain('warehouse/');
+    expect(steps).toContain('working_directory: warehouse');
+    // The check that cannot fail is gone.
+    expect(steps).not.toContain('connection test');
+  });
+
+  it('reports data sitting in the project root as the root', async () => {
+    const root = await scaffoldProject({ withModel: false });
+    await writeFile(path.join(root, 'orders.csv'), 'id\n1\n', 'utf8');
+
+    const report = await runSchema(root, [], { json: true });
+
+    expect(report.dataElsewhere).toEqual([{ directory: '.', fileCount: 1 }]);
+    expect(report.nextSteps.join('\n')).toContain('the project root');
+  });
+
+  it('sorts the directory holding the most data first', async () => {
+    const root = await scaffoldProject({ withModel: false });
+    await mkdir(path.join(root, 'seeds'), { recursive: true });
+    await mkdir(path.join(root, 'warehouse'), { recursive: true });
+    await writeFile(path.join(root, 'seeds/regions.csv'), 'region\nwest\n', 'utf8');
+    await writeFile(path.join(root, 'warehouse/orders.csv'), 'id\n1\n', 'utf8');
+    await writeFile(path.join(root, 'warehouse/customers.csv'), 'id\n1\n', 'utf8');
+
+    const report = await runSchema(root, [], { json: true });
+
+    expect(report.dataElsewhere?.map((entry) => entry.directory)).toEqual(['warehouse', 'seeds']);
+    expect(report.nextSteps.join('\n')).toContain('working_directory: warehouse');
+  });
+
+  it('says so plainly when the project holds no data at all', async () => {
+    const root = await scaffoldProject({ withModel: false });
+
+    const report = await runSchema(root, [], { json: true });
+
+    expect(report.ok).toBe(true);
+    expect(report.dataElsewhere).toEqual([]);
+
+    const steps = report.nextSteps.join('\n');
+    expect(steps).toContain('neither does anywhere else in this project');
+    expect(steps).toContain('working_directory');
+    expect(steps).not.toContain('connection test');
+  });
+
+  it('does not go looking when a pattern is what emptied the listing', async () => {
+    const root = await scaffoldProject();
+
+    const report = await runSchema(root, [], { json: true, pattern: 'nothing_here' });
+
+    expect(report.tables).toEqual([]);
+    expect(report.dataElsewhere).toBeNull();
+    expect(report.nextSteps.join('\n')).toContain('without --pattern');
+  });
 });
 
 describe('runSchema columns', () => {
