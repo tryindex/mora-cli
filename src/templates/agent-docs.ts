@@ -21,7 +21,9 @@ export function renderMalloyGuide({
   return `# Malloy for Mora projects
 
 Mora maintains this file. Anything written here is replaced when Mora rewrites
-it, so put project-specific notes in AGENTS.md under "Team conventions" instead.
+it, so project-specific notes belong in \`${modelsDir}/conventions.md\` if they
+are about how this team defines metrics, and in AGENTS.md under "Team
+conventions" otherwise.
 
 Read this before editing a \`.malloy\` file in \`${modelsDir}/\`.
 
@@ -126,13 +128,17 @@ expert would say it out loud: \`revenue\`, \`active_customers\`,
    answers start disagreeing.
 2. Check anything you are about to assume about the data with
    \`mora query -f\`, rather than trusting a column name.
-3. Add the dimension, measure or view next to related definitions, with a \`#"\`
+3. Agree what the new definition means with the person who asked for it, using
+   the questions in \`.agents/modeling.md\`. They apply to a measure added to an
+   existing source exactly as they do to a new one: what a number means is not
+   yours to decide, and the answers are what the doc string has to say.
+4. Add the dimension, measure or view next to related definitions, with a \`#"\`
    doc string on every new definition.
-4. Run \`mora validate\`. Because Malloy resolves table schemas while compiling,
+5. Run \`mora validate\`. Because Malloy resolves table schemas while compiling,
    a pass means the model parses *and* the referenced columns really exist.
-5. Run the query with \`mora query\` and report the answer together with the
+6. Run the query with \`mora query\` and report the answer together with the
    definitions it used, so a human can check the logic and not just the number.
-6. Commit and open a pull request. Until it is reviewed, say that the definition
+7. Commit and open a pull request. Until it is reviewed, say that the definition
    is proposed.
 
 ## Changing something that already exists
@@ -158,11 +164,14 @@ export function renderModelingGuide({
   return `# Proposing a semantic layer
 
 Mora maintains this file. Anything written here is replaced when Mora rewrites
-it, so put project-specific notes in AGENTS.md under "Team conventions" instead.
+it, so project-specific notes belong in \`${modelsDir}/conventions.md\` if they
+are about how this team defines metrics, and in AGENTS.md under "Team
+conventions" otherwise.
 
 Read this when the warehouse has tables that \`${modelsDir}/\` does not cover yet.
 For adding a measure to a source that already exists, \`.agents/malloy.md\` is the
-guide you want; this one is about proposing sources that do not exist.
+guide you want; this one is about proposing sources that do not exist. The
+questions in section 3 apply either way — every new metric goes through them.
 
 The shape of the work, and none of the steps are optional:
 
@@ -292,11 +301,72 @@ one as your recommendation and give the reason.
 one domain well can be reviewed; one that covers twenty cannot, and an
 unreviewed definition is worth no more than the ad-hoc SQL it replaced.
 
-## 3. Write the models
+## 3. Agree what each metric means
 
-Once a human has picked a scope, write it into \`${modelsDir}/\`. Read
-\`.agents/malloy.md\` first for the syntax and the doc string conventions; the
-rules specific to a first draft are these:
+A scope says which domain to model. It does not say what \`revenue\` means, and
+that is the part you cannot decide. A measure will be read by people who were
+not in the room and who will trust it without re-deriving it, so the definition
+has to be the one the business already uses, not a reasonable one you inferred.
+
+Work through the questions below before writing any metric, whether it is the
+first in a new source or a measure added to one that exists.
+
+**Read before you ask.** Go through \`${modelsDir}/*.malloy\` and
+\`${modelsDir}/conventions.md\` first. The models say what is already defined and
+what those definitions leave out; \`conventions.md\` is where this team records
+the answers that hold for every metric — canonical sources, calendar, standard
+exclusions, who approves a change. Anything answered there is settled. Bring
+what you found as statements to be corrected, ask only about what is genuinely
+open, and put all of it in one message rather than a question at a time.
+
+1. **Relationship to what exists.** Does something in \`${modelsDir}/\` already
+   mean this, or nearly? Is this new, a variant of an existing metric, or one of
+   its drivers? Which direction is good when it moves? A second measure that
+   means what the first one means is how two answers start disagreeing, and a
+   variant belongs next to what it varies from, named for the difference.
+2. **Name, definition, unit.** The exact name, a one-sentence definition in
+   plain language, and the unit — a count, an amount of money, a percentage. If
+   it is a ratio: what is the numerator, what is the denominator, and what the
+   metric should be when the denominator is zero.
+3. **Source of truth.** Which table, on which connection, is authoritative for
+   this — and what official number does it have to reconcile against? A metric
+   that disagrees with the figure the team already reports is wrong until
+   someone says otherwise, whichever one the query supports.
+4. **Grain and time.** Which timestamp is the canonical one to report on, given
+   that a row usually has several. At what granularity is the metric read, and
+   under which calendar: when does a week start, does the fiscal year differ
+   from the calendar year, and which timezone is a day measured in?
+5. **Dimensions and filters.** Which attributes does it need to be sliced by,
+   and over which join keys — only ones whose cardinality you verified. Which
+   rows are excluded from the population, and what does excluding them leave
+   out: test accounts, internal orders, cancelled rows, a region that is null on
+   3% of rows.
+6. **Evidence.** Which probes settle the assumptions this definition rests on —
+   key uniqueness, null rates, the reconciliation in question 3. Run them with
+   \`mora query -f\` and keep the results: they are what the pull request
+   description is made of.
+7. **Ownership.** Who owns this definition and approves the pull request. If
+   \`conventions.md\` names someone, that is the answer.
+
+What to do with the answers, and this is the part that makes the next metric
+cheaper:
+
+- **Answers about this metric become its \`#"\` doc string.** The definition, the
+  unit, what the population excludes, what surprised you. A caveat that lives
+  only in the message you sent is a caveat the next reader will not have.
+- **Answers that hold for every metric go in \`${modelsDir}/conventions.md\`,** in
+  the same pull request. That file is the team's, Mora never rewrites it, and
+  every answer added to it is a question nobody has to be asked again.
+- **An unanswered question is not yours to answer.** Say which one is open and
+  what it blocks. If you are told to proceed anyway, write the assumption into
+  the doc string in so many words, so the reviewer is deciding about it rather
+  than inheriting it.
+
+## 4. Write the models
+
+Once a human has picked a scope and answered the questions above, write it into
+\`${modelsDir}/\`. Read \`.agents/malloy.md\` first for the syntax and the doc
+string conventions; the rules specific to a first draft are these:
 
 - One file per base source, named for the table it wraps.
 - \`primary_key\` on anything that has one, from the key you verified is unique.
@@ -304,14 +374,17 @@ rules specific to a first draft are these:
   showed rather than the one the column names imply.
 - A few measures that answer the questions from the scope you agreed. Resist
   adding every aggregate that is possible.
-- A \`#"\` doc string on every definition, saying what it means and what it
-  leaves out. A measure whose caveats are undocumented invites someone to
-  re-derive it, which is the problem the semantic layer exists to solve.
+- A \`#"\` doc string on every definition, carrying the answers from section 3:
+  what it means, what it leaves out, and which figure it reconciles with. A
+  measure whose caveats are undocumented invites someone to re-derive it, which
+  is the problem the semantic layer exists to solve.
 - Where the data surprised you, say so in the doc string. "Excludes the 3% of
   rows with a null region" is exactly the kind of thing that must not live only
   in your answer.
+- Anything you learned that holds for every metric, not just this one, goes in
+  \`${modelsDir}/conventions.md\`.
 
-## 4. Validate, then hand it over
+## 5. Validate, then hand it over
 
 \`\`\`bash
 mora validate                     # compiling proves the columns really exist
@@ -320,8 +393,9 @@ mora query orders.revenue_by_month
 
 Spot-check each measure against something known before reporting anything. Then
 commit and open a pull request. Say in it what you checked and what you found,
-including the surprises: the reviewer is deciding whether to trust these
-definitions, and those checks are most of the evidence.
+including the surprises, and reconcile each metric against the official number
+named in section 3: the reviewer is deciding whether to trust these definitions,
+and those checks are most of the evidence.
 
 This last part is not a formality. Until a human reviews them, these definitions
 are *proposed*: they carry no more authority than the queries they replace, and
@@ -339,7 +413,9 @@ export function renderMoraGuide({
   return `# The mora command line
 
 Mora maintains this file. Anything written here is replaced when Mora rewrites
-it, so put project-specific notes in AGENTS.md under "Team conventions" instead.
+it, so project-specific notes belong in \`${modelsDir}/conventions.md\` if they
+are about how this team defines metrics, and in AGENTS.md under "Team
+conventions" otherwise.
 
 Read this before running a \`mora\` command.
 
@@ -365,6 +441,11 @@ definitions with their doc strings, their filters and their joins — more than 
 listing would. Do it before writing a query, so an answer reuses a definition
 someone reviewed instead of inventing one, and report the doc string of anything
 you use so the reader gets its caveats too.
+
+\`${modelsDir}/conventions.md\` sits alongside them and holds what is true of
+every metric here: canonical sources, the calendar, standard exclusions, who
+approves a change. Read it before adding a definition — it is the team's own
+file, and the questions it answers are ones you would otherwise have to ask.
 
 ## mora query <name> | -f <file> | -e "<malloy>"
 

@@ -119,6 +119,15 @@ A definition arrives with the caveats that make it safe to use, or it invites
 someone to re-derive it by hand. "Excludes the 3% of rows with a null region" is
 the kind of thing that must not live only in the answer an agent gave once.
 
+**What a metric means is not the agent's to decide.** An agent can establish from
+the data whether `total` includes tax; it cannot establish whether a refunded
+order counts as revenue, when the week starts, or which of three timestamps
+finance reports on. Those are decisions, and a definition that makes them quietly
+is exactly what the tool argues against. So the guidance gives a fixed set of
+questions to work through before writing any metric, and the answers are recorded
+where the next reader finds them: per-metric in the `#"` doc string, everything
+that generalises in `metrics/conventions.md`.
+
 **Committed files never hold secrets.** `mora.yaml` is committed, so credentials
 go in as `${VAR}` and resolve only when a connection opens. `.env.example` records
 which variables a project needs; `.env` holds values and is gitignored. When in
@@ -127,8 +136,10 @@ doubt, write the reference.
 **Own little, and own it visibly.** `.agents/*.md` belongs to Mora and is
 rewritten whenever Mora writes it. `AGENTS.md` is shared through
 `mora:begin`/`mora:end` markers, with the team's section outside them.
-`mora.yaml` belongs to the project — which is why `mora connection add` edits it
-as a YAML document, preserving comments, rather than re-rendering it.
+`metrics/conventions.md` is the team's outright: written once and never again,
+because everything in it is something they decided. `mora.yaml` belongs to the
+project — which is why `mora connection add` edits it as a YAML document,
+preserving comments, rather than re-rendering it.
 
 **Convention over configuration.** Models go in `metrics/`, and `init` does not
 ask. Every Mora project keeping them in the same place is worth more than the
@@ -136,9 +147,10 @@ choice, and it lets the docs an agent reads name the directory outright. Escape
 hatches stay (`--models`), but they are not prompts.
 
 **A scaffold is the semantic layer, and nothing else.** `init` writes the config,
-an empty models directory, and the docs. It does not write a model: what belongs
-there is sources over the reader's own tables, and only they know which. It does
-not write anything a project might not need.
+an empty models directory, the docs, and `metrics/conventions.md` for the team to
+answer. It does not write a model: what belongs there is sources over the
+reader's own tables, and only they know which. It does not write anything a
+project might not need.
 
 **Five commands, and each one earns its place.** `init` and `connection` set a
 project up; `schema`, `query` and `validate` are the loop. A sixth needs to be
@@ -271,6 +283,22 @@ Recorded so they are not rediscovered by accident:
   reviewed, sitting in the one directory that is supposed to hold only reviewed
   definitions. The empty state is the honest one, and it is what sends an agent
   to `.agents/modeling.md`.
+- **The metric questions are a doc, not a command.** A `mora ask` that printed a
+  questionnaire would be the agent's own conversation routed through a
+  subprocess, and it could not do the one thing that makes the questions cheap:
+  drop the ones the repo already answers. The list lives in
+  `.agents/modeling.md` because that is where the agent already looks before it
+  models, and the answers land in the doc string and in
+  `metrics/conventions.md`, both of which a reviewer reads anyway.
+- **`metrics/conventions.md` is the one scaffolded file Mora never rewrites,**
+  which is why `write-once` exists as a strategy alongside `replace` and
+  `managed-block`. It cannot be Mora-owned: every line in it is a decision the
+  team made, and refreshing it would delete exactly what it is for. It is not
+  markers inside `AGENTS.md` either, because an agent adding a metric should
+  read one short file about metrics rather than scan a document about the repo,
+  and it belongs next to the models it qualifies so a diff to a definition and a
+  diff to the rule behind it land in the same review. `--force` re-scaffolds
+  Mora's output, not the team's, so it leaves this file alone too.
 - **Doc strings on pass-through queries are omitted.** A `query:` that runs a view
   inherits its description; repeating it produces a concatenated, redundant one.
 - **BigQuery `project_id` also defaults the billing project.** The driver only

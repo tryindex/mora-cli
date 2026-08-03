@@ -18,7 +18,7 @@ export function renderAgentsDoc(options: AgentsDocOptions): AgentsDoc {
   return {
     title: renderTitle(options),
     managed: renderManaged(options),
-    teamSection: TEAM_SECTION,
+    teamSection: renderTeamSection(options),
   };
 }
 
@@ -31,12 +31,16 @@ question about the data.
 `;
 }
 
-const TEAM_SECTION = `## Team conventions
+function renderTeamSection({ modelsDir }: AgentsDocOptions): string {
+  return `## Team conventions
 
 Mora never edits this section, so conventions written here are yours to keep.
-Worth recording: which sources are canonical, how measures should be named, and
-who to ask before changing one that is already in use.
+This is the place for rules about working in this repo. Rules about what a
+metric means — canonical sources, naming, the calendar, standard exclusions, who
+approves a definition — go in \`${modelsDir}/conventions.md\` instead, which is
+the file an agent reads before it proposes one.
 `;
+}
 
 function renderManaged(options: AgentsDocOptions): string {
   const { modelsDir, agentDocsDir } = options;
@@ -44,6 +48,7 @@ function renderManaged(options: AgentsDocOptions): string {
   const layout = [
     '- `mora.yaml` - project config: model directory and database connections.',
     `- \`${modelsDir}/\` - Malloy models. This is the semantic layer.`,
+    `- \`${modelsDir}/conventions.md\` - the team's own rules for what a metric means.`,
     `- \`${agentDocsDir}/modeling.md\` - how to turn a warehouse table into reviewed definitions.`,
     `- \`${agentDocsDir}/malloy.md\` - how to write Malloy in this project.`,
     `- \`${agentDocsDir}/mora.md\` - the \`mora\` commands, their flags and output.`,
@@ -72,10 +77,12 @@ below ends in a pull request rather than in an answer.
    agreed on. Reuse before adding.
 2. **Answer with what is there**, by name: \`mora query <name>\`. Report the SQL
    it prints alongside the number, so a human can audit how you got it.
-3. **When the vocabulary is missing a concept**, add it to a model as a named
-   dimension, measure or view with a \`#"\` doc string, run \`mora validate\`,
-   and query it by name. Never inline the logic into a one-off query and leave
-   it there.
+3. **When the vocabulary is missing a concept**, agree what it means before
+   defining it: read \`${modelsDir}/conventions.md\`, then ask the questions in
+   \`${agentDocsDir}/modeling.md\` about anything it does not answer. Then add it
+   to a model as a named dimension, measure or view with a \`#"\` doc string, run
+   \`mora validate\`, and query it by name. Never inline the logic into a one-off
+   query and leave it there.
 4. **When the question is about a table no model covers**, this is a modelling
    job, not a query: read \`${agentDocsDir}/modeling.md\` and follow it. It
    starts at \`mora schema\` and ends at a pull request, with a human agreeing
@@ -97,7 +104,9 @@ below ends in a pull request rather than in an answer.
    that uses it, so prefer adding a new one over redefining.
 5. Never guess at what data means. A column called \`total\` may or may not
    include tax, and only a query can settle it.
-6. Report the SQL or the definitions behind every number, so a human can audit
+6. Never decide what a metric means. What counts as revenue is the team's to
+   say, so ask before defining one and write the answer into its doc string.
+7. Report the SQL or the definitions behind every number, so a human can audit
    how the answer was produced.
 
 ## Required reading
@@ -109,6 +118,10 @@ them rather than guessing:
   semantic layer does not cover yet.
 - Read \`${agentDocsDir}/malloy.md\` before editing a \`.malloy\` file.
 - Read \`${agentDocsDir}/mora.md\` before running a \`mora\` command.
+
+\`${modelsDir}/conventions.md\` is not Mora's — it is this team's answers about
+what a metric means. Read it before adding any definition, and add to it
+whatever you learn that will be true of the next one too.
 
 ## Layout
 

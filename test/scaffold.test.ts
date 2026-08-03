@@ -37,6 +37,7 @@ describe('buildScaffold', () => {
     expect(paths).toEqual([
       'mora.yaml',
       'metrics/.gitkeep',
+      'metrics/conventions.md',
       'AGENTS.md',
       '.agents/malloy.md',
       '.agents/modeling.md',
@@ -54,6 +55,7 @@ describe('buildScaffold', () => {
   it('honours a custom models directory', () => {
     const paths = buildScaffold(spec({ modelsDir: 'models/core' })).map((file) => file.path);
     expect(paths).toContain('models/core/.gitkeep');
+    expect(paths).toContain('models/core/conventions.md');
     expect(paths).not.toContain('metrics/.gitkeep');
   });
 });
@@ -78,6 +80,24 @@ describe('generated agent docs', () => {
     // A scope is agreed with a human before any file is written.
     expect(guide).toContain('let a human choose');
     expect(guide).toContain('pull request');
+  });
+
+  it('makes an agent agree what a metric means before defining it', () => {
+    const modeling = doc('.agents/modeling.md');
+    const malloy = doc('.agents/malloy.md');
+
+    expect(modeling).toContain('## 3. Agree what each metric means');
+    // The answers that make a definition auditable, rather than a reasonable
+    // guess someone will trust.
+    expect(modeling).toContain('reconcile against');
+    expect(modeling).toContain('when the denominator is zero');
+    expect(modeling).toContain('An unanswered question is not yours to answer');
+    // Asked once, then recorded: per-metric answers in the doc string, the rest
+    // in the file the team owns.
+    expect(modeling).toContain('metrics/conventions.md');
+    // Adding a measure to a source that exists skips this guide unless the
+    // other one sends the reader here.
+    expect(malloy).toContain('the questions in `.agents/modeling.md`');
   });
 
   it('shows the throwaway source in a form that runs', () => {
@@ -144,6 +164,24 @@ describe('generated agent docs', () => {
 
     expect(guide).toContain('-f, --file <path>');
     expect(modeling).toContain('mora query -f');
+  });
+
+  it('scaffolds the conventions file for the team to answer, next to the models', () => {
+    const conventions = doc('metrics/conventions.md');
+
+    expect(conventions).toContain('# Metric conventions');
+    expect(conventions).toContain('## Canonical sources');
+    expect(conventions).toContain('## Ownership and review');
+    // Mora writes it once, and saying so is what makes it worth answering.
+    expect(conventions).toContain('never touches it again');
+    expect(conventions).toContain('.agents/modeling.md');
+  });
+
+  it('tells an agent the conventions file is the team’s, not Mora’s', () => {
+    const agents = doc('AGENTS.md');
+
+    expect(agents).toContain('metrics/conventions.md');
+    expect(agents).toContain('Never decide what a metric means');
   });
 });
 
@@ -250,6 +288,9 @@ describe('writeScaffold', () => {
     expect(begin).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(begin);
     expect(contents.indexOf('## Team conventions')).toBeGreaterThan(end);
+    // Two team-owned places, and the section says which is for what: rules
+    // about the repo here, rules about what a metric means next to the models.
+    expect(contents.slice(end)).toContain('metrics/conventions.md');
   });
 
   it('reports conflicts instead of silently replacing files', async () => {
@@ -263,6 +304,25 @@ describe('writeScaffold', () => {
     expect(conflicts).not.toContain('.gitignore');
     // Mora owns its own docs outright, so an older copy of one is not a conflict.
     expect(conflicts).not.toContain('.agents/malloy.md');
+    // The conventions file is never rewritten, so it cannot be lost either.
+    expect(conflicts).not.toContain('metrics/conventions.md');
+  });
+
+  it('leaves an answered conventions file alone, even on a re-scaffold', async () => {
+    const root = await tempDir();
+    const files = buildScaffold(spec());
+    await writeScaffold(root, files);
+
+    const answered = '# Metric conventions\n\nRevenue excludes tax. Ask Dana.\n';
+    await writeFile(path.join(root, 'metrics/conventions.md'), answered, 'utf8');
+
+    const { written } = await writeScaffold(root, files);
+    expect(written.find((file) => file.path === 'metrics/conventions.md')?.action).toBe(
+      'unchanged',
+    );
+    await expect(readFile(path.join(root, 'metrics/conventions.md'), 'utf8')).resolves.toBe(
+      answered,
+    );
   });
 
   it('rewrites its own docs only when they have changed', async () => {

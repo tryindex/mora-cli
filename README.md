@@ -42,6 +42,7 @@ That asks for a project name and a data source, then writes:
 ```
 mora.yaml               # models directory + database connections
 metrics/                # your Malloy models. Empty: they are yours to write
+  conventions.md        # what a metric means here. Yours, and never rewritten
 AGENTS.md               # the loop your agent follows, plus your own conventions
 .agents/
   modeling.md           # warehouse to reviewed definitions, step by step
@@ -285,6 +286,43 @@ comments on it, so a definition arrives with the caveats that make it safe to
 use. "Excludes the 3% of rows with a null region" belongs there, not in the
 answer an agent gave once.
 
+## Every metric gets agreed, not inferred
+
+An agent can find out from the data whether `total` includes tax. It cannot find
+out whether your company counts a refunded order in revenue, when your week
+starts, or which of three plausible timestamps the finance team reports on. Those
+are decisions, and a definition that quietly makes them on your behalf is the
+thing this tool exists to prevent — it will be read by people who were not in the
+room and trusted without being re-derived.
+
+So `.agents/modeling.md` gives the agent a fixed set of questions to work through
+before it writes any metric, whether that is a new source or one more measure on
+an existing one: how this relates to what is already defined, the name and unit
+and the formula if it is a ratio, which table is authoritative and which official
+number it must reconcile against, the canonical timestamp and the calendar, the
+dimensions and the population it excludes, the probes that back all of it, and
+who approves the pull request. The answers do not stay in the chat: per-metric
+ones become the `#"` doc string, so they travel with the definition.
+
+Answers that hold for every metric go in `metrics/conventions.md`, which `init`
+scaffolds as a set of unanswered prompts:
+
+```
+## Canonical sources
+## Naming
+## Time
+## Standard filters
+## Reconciliation
+## Ownership and review
+## Questions to ask before adding a metric
+```
+
+That file is yours. Mora writes it once and never rewrites it, not even under
+`--force`, because everything in it is something your team decided. An agent
+reads it before it asks anything, so a question you have already answered there
+is one nobody gets asked again — and the fifth metric costs a lot less to agree
+than the first.
+
 ## `mora connection`
 
 A real semantic layer runs on your warehouse, and `mora connection` is how it
@@ -413,6 +451,10 @@ files never argues with a rule your team wrote:
 - `AGENTS.md` is shared. Mora maintains the part between its
   `mora:begin`/`mora:end` markers and scaffolds a `## Team conventions` section
   below it. Anything outside the markers is yours.
+- `metrics/conventions.md` is yours from the moment it exists. Mora scaffolds it
+  once and never writes it again, so it is the place for anything about what a
+  metric means; `## Team conventions` in `AGENTS.md` is for rules about working
+  in the repo.
 - `mora.yaml` belongs to the project. `mora connection add` edits it as a YAML
   document, preserving your comments and ordering rather than re-rendering it.
 

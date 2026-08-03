@@ -12,6 +12,7 @@ import {
   renderMoraGuide,
 } from './templates/agent-docs.js';
 import { renderAgentsDoc } from './templates/agents-doc.js';
+import { renderConventionsDoc } from './templates/conventions-doc.js';
 import { renderEnvExample } from './templates/env.js';
 import { renderMoraConfig } from './templates/mora-config.js';
 
@@ -34,7 +35,7 @@ export interface ScaffoldSpec {
   connectionSettings?: Record<string, string>;
 }
 
-export type WriteStrategy = 'replace' | 'merge-lines' | 'managed-block';
+export type WriteStrategy = 'replace' | 'merge-lines' | 'managed-block' | 'write-once';
 
 export const MANAGED_BEGIN = '<!-- mora:begin managed -->';
 export const MANAGED_END = '<!-- mora:end managed -->';
@@ -116,6 +117,18 @@ export function buildScaffold(spec: ScaffoldSpec): ScaffoldFile[] {
     path: `${paths.modelsDir}/.gitkeep`,
     strategy: 'replace',
     contents: '',
+  });
+
+  // The one scaffolded file Mora never rewrites: it exists to be answered, and
+  // the answers are what stop an agent asking the same questions every time it
+  // adds a metric.
+  files.push({
+    path: `${paths.modelsDir}/conventions.md`,
+    strategy: 'write-once',
+    contents: renderConventionsDoc({
+      modelsDir: paths.modelsDir,
+      agentDocsDir: AGENT_DOCS_DIR,
+    }),
   });
 
   const agentsDoc = renderAgentsDoc({
@@ -289,6 +302,13 @@ export async function writeScaffold(
 
     if (file.strategy === 'managed-block') {
       written.push(await writeManagedBlock(absolute, file));
+      continue;
+    }
+
+    // A file the team owns from the moment it exists. Whatever is there is
+    // their writing, and --force is about replacing Mora's output, not theirs.
+    if (file.strategy === 'write-once' && existsSync(absolute)) {
+      written.push({ path: file.path, action: 'unchanged' });
       continue;
     }
 
