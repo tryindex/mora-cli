@@ -1,6 +1,6 @@
 {
   "name": "@moradata/cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Agent-first framework to build and manage a Malloy semantic layer for trusted queries",
   "license": "MIT",
   "type": "module",
