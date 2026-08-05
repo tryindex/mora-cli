@@ -4,6 +4,7 @@ import type { Connection, Explore, Runtime } from '@malloydata/malloy';
 import type {
   BigQueryConnectionConfig,
   DuckDbConnectionConfig,
+  PostgresConnectionConfig,
   SupportedConnectionConfig,
 } from '../config.js';
 import { ExitCode, MoraError } from '../errors.js';
@@ -61,6 +62,9 @@ export async function listTables(
 ): Promise<TableList> {
   if (connection.type === 'duckdb') {
     return listDuckDbTables(connection, root, pattern);
+  }
+  if (connection.type === 'postgres') {
+    return listPostgresTables(connection, root, pattern);
   }
   return listBigQueryTables(connection, root, pattern);
 }
@@ -295,6 +299,34 @@ async function queryDuckDbCatalog(opened: Connection): Promise<TableEntry[]> {
   return entries;
 }
 
+/** Schemas Postgres keeps for itself, which no model would ever read. */
+const POSTGRES_SYSTEM_SCHEMAS = ["'pg_catalog'", "'information_schema'"].join(', ');
+
+/**
+ * Every table the connection's role can see, qualified with its schema. Malloy's
+ * Postgres dialect has no default schema — a bare table name is rejected rather
+ * than resolved against the search path — so an unqualified name would be a name
+ * that does not work.
+ */
+async function listPostgresTables(
+  connection: PostgresConnectionConfig,
+  root: string,
+  pattern?: string,
+): Promise<TableList> {
+  const filter = pattern ? `\n  AND STRPOS(LOWER(table_name), ${pgLiteral(pattern)}) > 0` : '';
+  const listing = `${TABLE_COLUMNS} FROM information_schema.tables\nWHERE table_schema NOT IN (${POSTGRES_SYSTEM_SCHEMAS})${filter}\nLIMIT ${MAX_TABLES + 1}`;
+
+  return withConnection(connection, root, async (opened) =>
+    readTableRows(
+      // The driver puts every `runSQL` result through the unwrapping step Malloy's
+      // own generated SQL relies on: it keeps one column named `row` per row and
+      // discards the rest. A flat SELECT comes back as a list of undefined, so the
+      // catalog query is wrapped into that shape rather than selected columnwise.
+      await opened.runSQL(`SELECT TO_JSONB(listing) AS row FROM (\n${listing}\n) AS listing`),
+    ),
+  );
+}
+
 /**
  * Datasets to name in the per-dataset listing. Enough to be the whole answer for
  * most projects, and short enough to keep the query text sane in the ones where
@@ -424,6 +456,24 @@ function identifier(value: string): string {
     code: 'invalid-setting',
     hint: 'Check `project_id` and `location` on the connection in mora.yaml.',
   });
+}
+
+/**
+ * A Postgres string literal, lower-cased to match the LOWER() it is compared to.
+ * Doubling the quote is the only escape the standard defines, so this does not
+ * depend on `standard_conforming_strings`; a backslash is refused rather than
+ * escaped, because under the non-standard setting it would consume the closing
+ * quote, and no table name has one anyway.
+ */
+function pgLiteral(value: string): string {
+  if (value.includes('\\')) {
+    throw new MoraError('A --pattern cannot contain a backslash.', {
+      code: 'invalid-pattern',
+      exitCode: ExitCode.usage,
+      hint: 'Pass the text a table name contains, such as `--pattern orders`.',
+    });
+  }
+  return `'${value.toLowerCase().replace(/'/g, "''")}'`;
 }
 
 /** A BigQuery string literal, lower-cased to match the LOWER() it is compared to. */

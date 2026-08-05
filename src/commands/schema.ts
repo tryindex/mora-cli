@@ -3,7 +3,7 @@ import * as prompts from '@clack/prompts';
 import type { Command } from 'commander';
 import pc from 'picocolors';
 import { loadConfig, type MoraConfig, type SupportedConnectionConfig } from '../config.js';
-import { DATABASE_IDS } from '../databases.js';
+import { listDatabases } from '../databases.js';
 import { ExitCode, MoraError } from '../errors.js';
 import {
   type DataDirectory,
@@ -163,7 +163,7 @@ async function listMode(
     readsFrom,
     dataElsewhere,
     nextSteps: listNextSteps({
-      connectionName: connection.name,
+      connection,
       tables,
       truncated,
       pattern,
@@ -222,14 +222,14 @@ function selectConnection(config: MoraConfig, name: string | undefined): Support
   if (!found.supported) {
     throw new MoraError(`Mora has no driver for ${found.type} connections.`, {
       code: 'unsupported-connection',
-      hint: `It can open ${DATABASE_IDS.join(' and ')} connections.`,
+      hint: `It can open ${listDatabases()} connections.`,
     });
   }
   return found;
 }
 
 interface ListContext {
-  connectionName: string;
+  connection: SupportedConnectionConfig;
   tables: TableEntry[];
   truncated: boolean;
   pattern: string | undefined;
@@ -238,7 +238,7 @@ interface ListContext {
 }
 
 function listNextSteps({
-  connectionName,
+  connection,
   tables,
   truncated,
   pattern,
@@ -251,7 +251,7 @@ function listNextSteps({
         `Nothing matched "${pattern}". Run \`mora schema\` without --pattern to see everything.`,
       ];
     }
-    return emptyListingSteps(connectionName, readsFrom, dataElsewhere);
+    return emptyListingSteps(connection, readsFrom, dataElsewhere);
   }
 
   const steps = [
@@ -272,13 +272,19 @@ function listNextSteps({
  * passes and sends the reader looking in the wrong place.
  */
 function emptyListingSteps(
-  connectionName: string,
+  connection: SupportedConnectionConfig,
   readsFrom: string | null,
   dataElsewhere: DataDirectory[] | null,
 ): string[] {
+  const connectionName = connection.name;
+
   if (readsFrom === null) {
+    // Each warehouse has its own version of "you are looking in the wrong
+    // place", and naming the setting that decides it is the whole value here.
     return [
-      `${connectionName} returned no tables. Check that \`project_id\` on it names the project you meant, and that these credentials can see at least one dataset in that project.`,
+      connection.type === 'postgres'
+        ? `${connectionName} returned no tables. Check that \`database\` on it names the database you meant, and that the user has USAGE on at least one schema besides the system ones.`
+        : `${connectionName} returned no tables. Check that \`project_id\` on it names the project you meant, and that these credentials can see at least one dataset in that project.`,
     ];
   }
 

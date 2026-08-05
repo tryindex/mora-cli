@@ -1,4 +1,4 @@
-export const DATABASE_IDS = ['duckdb', 'bigquery'] as const;
+export const DATABASE_IDS = ['duckdb', 'postgres', 'bigquery'] as const;
 
 export type DatabaseId = (typeof DATABASE_IDS)[number];
 
@@ -26,6 +26,15 @@ export const DATABASES: Record<DatabaseId, DatabaseInfo> = {
     needsCredentials: false,
     sampleTable: 'data/orders.csv',
   },
+  postgres: {
+    id: 'postgres',
+    label: 'Postgres',
+    hint: 'a host, a database and a password',
+    needsCredentials: true,
+    // Postgres has no default schema in Malloy, so every table path is
+    // qualified. `public` is where an unqualified table actually lives.
+    sampleTable: 'public.orders',
+  },
   bigquery: {
     id: 'bigquery',
     label: 'BigQuery',
@@ -37,6 +46,13 @@ export const DATABASES: Record<DatabaseId, DatabaseInfo> = {
 
 export function isDatabaseId(value: string): value is DatabaseId {
   return (DATABASE_IDS as readonly string[]).includes(value);
+}
+
+/** The types Mora can open, as prose: "duckdb, postgres and bigquery". */
+export function listDatabases(): string {
+  const ids = [...DATABASE_IDS];
+  const last = ids.pop() as string;
+  return ids.length === 0 ? last : `${ids.join(', ')} and ${last}`;
 }
 
 /** One setting of a connection, as it is asked for and as it is written. */
@@ -97,6 +113,63 @@ export function connectionSettings(id: DatabaseId, context: SettingsContext): Co
           flag: 'working-directory',
         },
       ];
+    case 'postgres':
+      return [
+        {
+          key: 'host',
+          label: 'Host',
+          placeholder: 'localhost',
+          defaultValue: 'localhost',
+          required: true,
+          flag: 'host',
+        },
+        {
+          key: 'port',
+          label: 'Port',
+          placeholder: '5432',
+          defaultValue: '5432',
+          required: true,
+          flag: 'port',
+        },
+        {
+          key: 'database',
+          label: 'Database name',
+          comment: 'The database holding the tables the models read.',
+          placeholder: 'postgres',
+          defaultValue: 'postgres',
+          required: true,
+          flag: 'database',
+        },
+        {
+          key: 'user',
+          label: 'User',
+          comment: 'Read-only is enough: Mora never writes to your database.',
+          placeholder: 'postgres',
+          defaultValue: 'postgres',
+          required: true,
+          flag: 'user',
+        },
+        {
+          key: 'password',
+          label: 'Password',
+          comment:
+            'Written as a reference so the value stays out of version control.\n' +
+            'It is read when a connection opens, and never before.',
+          envVar: 'POSTGRES_PASSWORD',
+          required: true,
+          flag: 'password',
+        },
+        {
+          key: 'ssl',
+          label: 'Require TLS (true or false)',
+          comment:
+            'Set this to true for a managed Postgres (Neon, Supabase, RDS),\n' +
+            'which will refuse an unencrypted connection.',
+          placeholder: 'false',
+          required: false,
+          flag: 'ssl',
+        },
+      ];
     case 'bigquery':
       return [
         {
@@ -134,6 +207,31 @@ export function connectionSettings(id: DatabaseId, context: SettingsContext): Co
         },
       ];
   }
+}
+
+export interface SettingFlag {
+  /** Long flag, without the leading `--`. */
+  flag: string;
+  /** Help text, naming every database that uses it. */
+  description: string;
+}
+
+/**
+ * The flags that supply connection settings unattended, derived from the
+ * registry so a new setting cannot arrive without one. Two databases can share a
+ * flag — `--database` is a file to DuckDB and a database name to Postgres — and
+ * the help text names both rather than whichever was declared first.
+ */
+export function settingFlags(ids: readonly DatabaseId[], context: SettingsContext): SettingFlag[] {
+  const described = new Map<string, string[]>();
+  for (const id of ids) {
+    for (const setting of connectionSettings(id, context)) {
+      const shared = described.get(setting.flag) ?? [];
+      shared.push(`${DATABASES[id].label}: ${setting.label}`);
+      described.set(setting.flag, shared);
+    }
+  }
+  return [...described].map(([flag, labels]) => ({ flag, description: labels.join('; ') }));
 }
 
 /**

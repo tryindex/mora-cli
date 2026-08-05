@@ -17,6 +17,7 @@ import {
   type DatabaseId,
   defaultConnectionSettings,
   isDatabaseId,
+  settingFlags,
 } from '../databases.js';
 import {
   describeEnvironment,
@@ -129,12 +130,8 @@ export function registerInitCommand(program: Command): void {
 
   // One flag per warehouse setting so init can finish setup unattended. DuckDB's
   // settings are fixed by the scaffold, so only credentialed databases appear.
-  for (const id of WAREHOUSE_IDS) {
-    for (const setting of connectionSettings(id, { modelsDir: '<models>' })) {
-      if (!command.options.some((option) => option.long === `--${setting.flag}`)) {
-        command.option(`--${setting.flag} <value>`, `${DATABASES[id].label}: ${setting.label}`);
-      }
-    }
+  for (const { flag, description } of settingFlags(WAREHOUSE_IDS, { modelsDir: '<models>' })) {
+    command.option(`--${flag} <value>`, description);
   }
 
   command
@@ -166,6 +163,7 @@ Agent usage:
 Examples:
   $ mora init
   $ mora init ./analytics --db duckdb --yes
+  $ mora init --db postgres --host db.internal --database shop --yes
   $ mora init --db bigquery --project-id '\${GOOGLE_CLOUD_PROJECT}' --yes
   $ mora init --db bigquery --connection warehouse --no-test --json`,
     )
@@ -198,8 +196,12 @@ async function runScaffold(
   flags: InitFlags,
 ): Promise<ScaffoldReport> {
   const interactive = isInteractive(flags);
+  // Prompting and reporting are separate questions. `--yes` only says not to ask
+  // anything; a reader who ran it still needs to be told what was written, and
+  // every other command prints prose unless `--json` asked for the report instead.
+  const prose = !flags.json;
 
-  if (interactive) {
+  if (prose) {
     prompts.intro(pc.bgCyan(pc.black(' mora init ')));
   }
 
@@ -234,7 +236,7 @@ async function runScaffold(
     spec,
     flags,
     missingEnvVars: envSetup.missingEnvVars,
-    prose: interactive,
+    prose,
   });
 
   // A project whose one connection cannot be opened is not a project yet, and
@@ -265,8 +267,8 @@ async function runScaffold(
     nextSteps: nextSteps(spec, envSetup.missingEnvVars, connection, kept),
   };
 
-  if (interactive) {
-    reportInteractive(report, directory);
+  if (prose) {
+    reportScaffold(report, directory);
   }
 
   return report;
@@ -376,6 +378,10 @@ async function testNewConnection(context: {
   if (spinner) {
     if (result.ok) spinner.stop(`${connection.name} answered`);
     else spinner.error(`${connection.name} did not answer`);
+  } else if (prose && result.ok) {
+    // Without a TTY there is no spinner to have said it, and a failure is
+    // reported by the rollback that follows.
+    prompts.log.success(`${connection.name} answered.`);
   }
   return result;
 }
@@ -681,12 +687,14 @@ function validateModelsDir(dir: string): string {
     throw new MoraError('The models directory cannot be empty.', {
       code: 'invalid-models-dir',
       exitCode: ExitCode.usage,
+      hint: `Leave --models off to use ${DEFAULT_MODELS_DIR}/, or name a directory inside the project.`,
     });
   }
   if (path.isAbsolute(normalized) || normalized.split('/').includes('..')) {
     throw new MoraError(`The models directory must stay inside the project: "${dir}".`, {
       code: 'invalid-models-dir',
       exitCode: ExitCode.usage,
+      hint: `Pass a relative path with no \`..\`, such as --models ${DEFAULT_MODELS_DIR}. Every other command reads it from mora.yaml.`,
     });
   }
   return normalized;
@@ -736,7 +744,7 @@ function nextSteps(
   return steps;
 }
 
-function reportInteractive(report: ScaffoldReport, directory: string): void {
+function reportScaffold(report: ScaffoldReport, directory: string): void {
   const location = directory === '.' ? 'this directory' : directory;
 
   if (report.rolledBack) {

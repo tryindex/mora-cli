@@ -44,6 +44,23 @@ export interface BigQueryConnectionConfig extends ConnectionConfigBase {
 }
 
 /**
+ * Settings are kept as written, so a `${VAR}` password is still a reference here
+ * and becomes a value only when the connection opens. `ssl` is the exception: it
+ * is a switch rather than a credential, so it is read as a boolean.
+ */
+export interface PostgresConnectionConfig extends ConnectionConfigBase {
+  type: 'postgres';
+  supported: true;
+  host?: string;
+  /** Kept as text: a port can be a `${VAR}` reference like anything else. */
+  port?: string;
+  database?: string;
+  user?: string;
+  password?: string;
+  ssl?: boolean;
+}
+
+/**
  * A connection Mora understands well enough to report on, but cannot open. These
  * exist in `mora.yaml` as placeholders so a project can declare its intent
  * before Mora has a driver for it.
@@ -54,7 +71,10 @@ export interface UnsupportedConnectionConfig extends ConnectionConfigBase {
 }
 
 /** A connection Mora has a driver for, and can compile and query against. */
-export type SupportedConnectionConfig = DuckDbConnectionConfig | BigQueryConnectionConfig;
+export type SupportedConnectionConfig =
+  | DuckDbConnectionConfig
+  | PostgresConnectionConfig
+  | BigQueryConnectionConfig;
 
 export type ConnectionConfig = SupportedConnectionConfig | UnsupportedConnectionConfig;
 
@@ -229,6 +249,19 @@ function readConnection(name: string, value: unknown, root: string): ConnectionC
         database: readDuckDbDatabase(name, settings.database, root),
         workingDirectory: readWorkingDirectory(name, settings.working_directory, root),
       };
+    case 'postgres':
+      return {
+        name,
+        type: 'postgres',
+        supported: true,
+        requiredEnvVars,
+        host: readOptionalSetting(name, 'host', settings.host),
+        port: readOptionalSetting(name, 'port', settings.port),
+        database: readOptionalSetting(name, 'database', settings.database),
+        user: readOptionalSetting(name, 'user', settings.user),
+        password: readOptionalSetting(name, 'password', settings.password),
+        ssl: readBooleanSetting(name, 'ssl', settings.ssl),
+      };
     case 'bigquery':
       return {
         name,
@@ -262,6 +295,24 @@ function readOptionalSetting(connection: string, key: string, value: unknown): s
     throw invalidConfig(`connection \`${connection}\` has an invalid \`${key}\`.`);
   }
   return value.trim();
+}
+
+/**
+ * A switch, written either as YAML's own `true` or as the string a shell would
+ * have passed through `--ssl true`. Anything else is refused: "yes" silently
+ * meaning false is how a connection ends up unencrypted without anyone deciding.
+ */
+function readBooleanSetting(connection: string, key: string, value: unknown): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  throw invalidConfig(
+    `connection \`${connection}\` has an invalid \`${key}\`: expected true or false.`,
+  );
 }
 
 function readDuckDbDatabase(name: string, value: unknown, root: string): string {

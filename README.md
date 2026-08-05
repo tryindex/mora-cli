@@ -28,8 +28,21 @@ an answer.
 Mora is a CLI, so any agent that can run a command can use it: Cursor, Claude
 Code, Codex, or your own.
 
-> **Status: early.** Five commands, DuckDB and BigQuery. See
+> **Status: early.** Five commands, DuckDB, Postgres and BigQuery. See
 > [Roadmap](#roadmap).
+
+## Install
+
+Needs Node 20.11 or newer, and nothing else.
+
+```bash
+npm install -g @moradata/cli    # then run `mora`
+npx @moradata/cli init          # or run it without installing anything
+```
+
+Install it globally if an agent is going to use it: `mora` on `PATH` is one less
+thing for it to work out, and one less network round trip per command. Nothing in
+a project pins a Mora version, so updating is `npm i -g @moradata/cli@latest`.
 
 ## Quick start
 
@@ -55,14 +68,150 @@ Those files are meant to be committed. Before finishing, `init` opens the
 connection you configured; a scaffold whose connection does not answer is removed
 again rather than left half-built.
 
-Then point your agent at a question about your data. It will read `AGENTS.md`,
-find `metrics/` empty, and follow `.agents/modeling.md`: list the tables, check
-the assumptions a model would rest on, and come back with a proposed scope before
-it writes anything.
-
 When a teammate clones the repo and runs the same command, Mora sets up their
 checkout instead of scaffolding again — see
 [Adopting a project someone else set up](#adopting-a-project-someone-else-set-up).
+
+## Hand it to your agent
+
+Nothing else to configure: open the project in Cursor, Claude Code or Codex and
+paste this.
+
+```
+Read AGENTS.md, then .agents/modeling.md. Run `mora schema` to see what we have.
+Before you write any model, tell me what you propose to define and which
+assumptions you checked with `mora query -f`.
+```
+
+It will find `metrics/` empty, list the tables, probe the ones it means to model,
+and come back with a scope rather than a model. Approving that scope is the only
+step it cannot do for you, and it is the step that makes the definitions worth
+having.
+
+## Five minutes, no warehouse needed
+
+DuckDB reads local files and needs no credentials, so the whole loop runs on a CSV
+in a temp directory. Every output below is real.
+
+**Scaffold it, and give it something to read.** A DuckDB connection resolves
+relative table paths from the models directory, the same way
+[Malloy Publisher](https://github.com/malloydata/publisher) resolves a package's,
+so `metrics/data/orders.csv` is `data/orders.csv` to a model:
+
+```bash
+mkdir mora-demo && cd mora-demo
+npx @moradata/cli init --db duckdb --yes
+
+mkdir -p metrics/data
+cat > metrics/data/orders.csv <<'CSV'
+id,customer_id,ordered_at,amount,status
+1,7,2024-01-05,120.00,complete
+2,7,2024-01-19,80.50,complete
+3,9,2024-02-02,540.00,complete
+4,9,2024-02-11,35.25,refunded
+5,12,2024-03-08,210.75,complete
+CSV
+```
+
+**1. See what is there.** No table name gets guessed; the listing is where they
+come from.
+
+```
+$ mora schema
+◇  Tables in duckdb duckdb ─╮
+│    data/orders.csv  file  │
+├───────────────────────────╯
+└  1 table
+
+$ mora schema data/orders.csv
+◇  data/orders.csv  duckdb duckdb ─╮
+│    id           number           │
+│    customer_id  number           │
+│    ordered_at   date             │
+│    amount       number           │
+│    status       string           │
+├──────────────────────────────────╯
+└  1 table, 5 columns.
+```
+
+**2. Check what is true of it.** There is a `status` column, so "revenue" has a
+decision in it. Ask the data, in `probe.malloy`:
+
+```malloy
+source: probe is duckdb.table('data/orders.csv')
+
+run: probe -> {
+  aggregate:
+    rows is count()
+    distinct_ids is count(id)
+    refunded is count() { where: status = 'refunded' }
+    null_amounts is count() { where: amount = null }
+}
+```
+
+```
+$ mora query -f probe.malloy
+▲  Unreviewed: this ran Malloy that is not in the model, so the logic behind these
+│  numbers has not been reviewed by anyone.
+◇  Rows ───────────────────────────────────────╮
+│  rows  distinct_ids  refunded  null_amounts  │
+│  5     5             1         0             │
+├──────────────────────────────────────────────╯
+└  1 row (unreviewed).
+```
+
+`id` is unique, so summing is safe, and one row in five is refunded — which is
+the number that makes the next step a decision rather than a guess.
+
+**3. Decide, then write it down.** Whether a refund counts is yours to settle, not
+your agent's. Say it excludes them, and `metrics/orders.malloy` records both the
+rule and the reason:
+
+```malloy
+#" One row per order placed, from the export in data/orders.csv.
+source: orders is duckdb.table('data/orders.csv') extend {
+  primary_key: id
+
+  measure:
+    #" Number of orders, refunded ones included.
+    order_count is count()
+    #" Order amount summed. Excludes refunds: status = 'refunded' is 1 of 5 rows.
+    revenue is amount.sum() { where: status != 'refunded' }
+
+  #" Revenue and order count by month the order was placed.
+  view: revenue_by_month is {
+    group_by: ordered_at.month
+    aggregate: revenue, order_count
+  }
+}
+```
+
+**4. Prove it compiles, then use it.** Malloy resolves table schemas at compile
+time, so a pass means the columns really exist:
+
+```
+$ mora validate
+◇  Models ──────────────────────────────────────────────────╮
+│    pass metrics/orders.malloy  1 source, 0 named queries  │
+├───────────────────────────────────────────────────────────╯
+└  1 model compiled against duckdb.
+
+$ mora query orders.revenue_by_month
+◇  Rows ─────────────────────────────╮
+│  ordered_at  revenue  order_count  │
+│  2024-03-01  210.75   1            │
+│  2024-02-01  540      2            │
+│  2024-01-01  200.5    2            │
+├────────────────────────────────────╯
+└  3 rows.
+```
+
+No warning this time: the logic came from a committed model rather than from the
+prompt. In a real project the last step is a pull request, and `revenue` means one
+thing from then on.
+
+Point `init` at [Postgres or BigQuery](#mora-connection) and nothing about the
+loop changes.
 
 ## Designed for agents
 
@@ -134,7 +283,8 @@ when a listing was cut short.
 
 What gets listed depends on the connection. A DuckDB connection reads files as
 well as registered tables, so both appear, with the files named relative to the
-connection's working directory. A BigQuery connection lists the whole project
+connection's working directory. A Postgres connection lists every table its role
+can see, qualified with its schema. A BigQuery connection lists the whole project
 where it is allowed to, and otherwise falls back to the datasets your credentials
 can actually see — being told nothing because most of the project is none of your
 business is not an answer. If even that is denied, the error names the role to ask
@@ -375,6 +525,7 @@ Every prompt has a flag, so an agent can do this unattended:
 
 ```bash
 mora connection add warehouse -t bigquery --project-id '${GOOGLE_CLOUD_PROJECT}' --default --json
+mora connection add shop -t postgres --host db.internal --database shop --json
 mora connection add exports -t duckdb --database exports.duckdb --yes
 ```
 
@@ -383,6 +534,13 @@ BigQuery authenticates with Application Default Credentials
 key file to use a service account instead. That login needs a browser, so it is
 the one step an agent has to hand back to a human.
 
+Postgres takes a host, a port, a database and a user, and its password is written
+as `${POSTGRES_PASSWORD}`. A read-only role is enough — Mora never writes to your
+database. Managed Postgres refuses an unencrypted connection, so add `--ssl true`
+for Neon, Supabase or RDS. Table paths are always `schema.table`, exactly as
+`mora schema` prints them: Malloy's Postgres dialect has no default schema, so a
+bare name fails even where `search_path` would have resolved it.
+
 ## `mora init`
 
 ```
@@ -390,26 +548,32 @@ Usage: mora init [options] [directory]
 
 Options:
   -n, --name <name>                    project name
-  -d, --db <database>                  data source (duckdb, bigquery)
+  -d, --db <database>                  data source (duckdb, postgres, bigquery)
   --connection <name>                  name models will use for it
   -m, --models <dir>                   directory for Malloy models (default: metrics)
   -y, --yes                            accept defaults without prompting
   -f, --force                          overwrite existing files
   --no-test                            keep the scaffold without checking the connection
-  --project-id <value>                 BigQuery: GCP project id
-  --location <value>                   BigQuery: location
-  --service-account-key-path <value>   BigQuery: service account key file
-  --billing-project-id <value>         BigQuery: billing project id
   --json                               print a machine-readable result instead of prose
+  --host <value>                       Postgres: Host
+  --port <value>                       Postgres: Port
+  --database <value>                   Postgres: Database name
+  --user <value>                       Postgres: User
+  --password <value>                   Postgres: Password
+  --ssl <value>                        Postgres: Require TLS (true or false)
+  --project-id <value>                 BigQuery: GCP project id
+  --location <value>                   BigQuery: Location
+  --service-account-key-path <value>   BigQuery: Service account key file
+  --billing-project-id <value>         BigQuery: Billing project id
 ```
 
 DuckDB works with no configuration, which is why it is the default: point it at
 local CSV, Parquet or `.duckdb` files and you have somewhere to model against in
-one command. Choosing BigQuery interactively asks for the connection settings,
-writes credential values into `.env`, and tests that the warehouse answers — so
-you leave the flow ready to query. The same settings are available as flags for
-unattended runs; prefer `${VAR}` references so nothing about your warehouse ends
-up in version control.
+one command. Choosing Postgres or BigQuery interactively asks for the connection
+settings, writes credential values into `.env`, and tests that the warehouse
+answers — so you leave the flow ready to query. The same settings are available as
+flags for unattended runs; prefer `${VAR}` references so nothing about your
+warehouse ends up in version control.
 
 Models go in `metrics/`, and init does not ask: every Mora project keeping them in
 the same place is worth more than the choice, and it lets the docs an agent reads
@@ -474,6 +638,60 @@ Publisher needs two files Mora does not write: a `publisher.json` in the models
 directory to make it a package, and a `publisher.config.json` listing the
 packages a server should load. See its docs for the current shape of both.
 
+## Troubleshooting
+
+**`mora schema` lists nothing, on DuckDB.** A DuckDB connection opens whether or
+not the directory it reads holds anything, so this almost always means
+`working_directory` is not where the data is. The report names the directory it
+walked and the directories in the project that do hold data files; set
+`working_directory` on the connection in `mora.yaml` to one of those, or move the
+data under the models directory. Relative table paths resolve from
+`working_directory`, which defaults to `metrics/` so a model stays portable to
+Malloy Publisher and the VS Code extension.
+
+**`Connection "warehouse" needs GOOGLE_CLOUD_PROJECT, which is not set.`** A
+`${VAR}` in `mora.yaml` with no value stops the command rather than falling back
+to whatever credentials the machine has, because connecting to the wrong
+warehouse quietly is worse than not connecting. Put the value in `.env` (which is
+gitignored) or in your environment. `mora connection list` shows every declared
+connection with the variables it needs and whether each one is set.
+
+**BigQuery refuses to authenticate, or cannot detect a project.** BigQuery uses
+Application Default Credentials, so a fresh machine needs
+`gcloud auth application-default login` — a browser step, and the one part of
+setup an agent has to hand back to a human. Use a service account instead by
+pointing `service_account_key_path` at a key file. "Unable to detect a project id"
+means `project_id` is unset or resolved to nothing; set it, and Mora bills against
+it too unless `billing_project_id` says otherwise.
+
+**Postgres rejects a table name that exists.** Malloy's Postgres dialect has no
+default schema, so `orders` fails and `public.orders` works, even though
+`search_path` would have found the first. `mora schema` prints every name
+qualified for exactly this reason. A managed Postgres that closes the connection
+instead needs TLS: set `ssl: true` on the connection in `mora.yaml`.
+
+**`mora schema` on BigQuery returns fewer datasets than you expect.** The
+region-wide listing needs `bigquery.tables.list` across every dataset in the
+project. Without it, Mora falls back to the datasets your credentials can actually
+see, which is the honest answer rather than nothing. If even that is denied, the
+error names the role to ask for: `roles/bigquery.metadataViewer`.
+
+**`mora init` printed nothing and exited 3.** It refuses to overwrite files it did
+not write. The error lists them; `--force` re-scaffolds Mora's own output, and
+leaves `metrics/conventions.md` and anything outside the `mora:begin`/`mora:end`
+markers in `AGENTS.md` alone.
+
+**A fresh clone fails `mora init`, and the models are fine.** Join mode compiles
+the committed models against your credentials, so a failure there is usually data
+that is not reachable from your machine rather than a broken model. Check the
+credentials it listed first, then whether your connection can see the tables the
+models read.
+
+**`mora validate` passes and `mora query` fails.** Compiling proves the columns
+exist; running proves the database will do the work. A permission error on a
+specific table, a query that times out, or a type the driver will not cast are all
+things only execution can find. The error is the database's own, reported verbatim.
+
 ## Roadmap
 
 In rough order:
@@ -481,7 +699,7 @@ In rough order:
 - **Depth in the modelling loop.** More of the checks in `.agents/modeling.md`
   worth running as one command, and better evidence in the pull request an agent
   opens. This is the part of Mora that is actually its own.
-- **More warehouses.** DuckDB and BigQuery work today; Snowflake, Postgres and
+- **More warehouses.** DuckDB, Postgres and BigQuery work today; Snowflake and
   Trino are drivers Malloy already has, and each is a connection type away.
 - **MCP over the loop** — `schema`, `query` and `validate` against a checkout,
   for agents that prefer tools to shell commands.

@@ -242,6 +242,7 @@ function parseLimit(value: string | undefined): number {
     throw new MoraError(`--limit must be a positive whole number, not "${value}".`, {
       code: 'invalid-limit',
       exitCode: ExitCode.usage,
+      hint: 'Pass a row count, such as `--limit 20`. Leave it off for the default.',
     });
   }
   return limit;

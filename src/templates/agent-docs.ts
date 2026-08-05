@@ -529,7 +529,8 @@ so an empty column list is never mistaken for a table without columns.
 \`--pattern\`.
 
 What appears depends on the connection: a DuckDB connection lists data files as
-well as registered tables, and a BigQuery connection lists the datasets the
+well as registered tables, a Postgres connection lists every table its role can
+see qualified with its schema, and a BigQuery connection lists the datasets the
 credentials can see. An empty listing from a warehouse that clearly has data is a
 permissions problem, not an empty warehouse — the error says which role to ask
 for, and it is worth reporting rather than working around.
@@ -539,6 +540,10 @@ wrong directory. \`readsFrom\` says which directory it resolves relative table
 paths from, and \`dataElsewhere\` names the directories in the project that do hold
 data files, so the fix is to set \`working_directory\` on the connection in
 \`mora.yaml\` to one of them. Do not read this as an empty database.
+
+A Postgres table path is always \`schema.table\`, as the listing prints it. Malloy's
+Postgres dialect has no default schema, so a bare table name fails even where
+\`search_path\` would have found it.
 
 Seeing a table is not the same as understanding it. A schema cannot say whether a
 key has duplicates, whether a foreign key is unique on the other side, or whether
@@ -560,6 +565,7 @@ setting that has no sensible default, and it will not need to prompt:
 
 \`\`\`bash
 mora connection add warehouse --type bigquery --project-id '\${GOOGLE_CLOUD_PROJECT}' --json
+mora connection add shop --type postgres --host db.internal --database shop --json
 mora connection add exports --type duckdb --database exports.duckdb --yes
 \`\`\`
 
@@ -574,14 +580,19 @@ unset, so a \`test\` that fails on a keyless connection usually means
 access. Ask the person you are working with to run it; it needs a browser, so you
 cannot do it for them.
 
+Postgres takes \`--host\`, \`--port\`, \`--database\` and \`--user\`, and its password is
+written as \`\${POSTGRES_PASSWORD}\` by default. A managed Postgres refuses an
+unencrypted connection, so add \`--ssl true\` for Neon, Supabase or RDS.
+
 ## mora init
 
 Two modes. In a directory without \`mora.yaml\`, init scaffolds a new semantic
 layer: \`mora.yaml\` with one connection, an empty \`${modelsDir}/\`, and the docs
 you are reading. Pass \`--db\` and any required setting as a flag so it does not
-need to prompt; for BigQuery that is usually
-\`--project-id '\${GOOGLE_CLOUD_PROJECT}'\`. Name the connection with
-\`--connection\`; it defaults to the database.
+need to prompt: for BigQuery that is usually
+\`--project-id '\${GOOGLE_CLOUD_PROJECT}'\`, and for Postgres \`--host\` and
+\`--database\`. Name the connection with \`--connection\`; it defaults to the
+database.
 
 Then it opens that connection, and **a scaffold whose connection does not answer
 is deleted again**. The report says \`rolledBack: true\` and \`files\` is empty, so

@@ -170,9 +170,9 @@ src/*.ts              domain: config, connections, env, scaffold, version,
 Rules that keep the layers honest:
 
 - **Only `src/malloy/` imports `@malloydata/*`,** and it imports them lazily
-  through `loadMalloy`/`loadDuckDb`/`loadBigQuery`. The drivers pull in native and
-  wasm bundles; `mora --help` must not pay for them, and a BigQuery-free project
-  must not load Google's client libraries.
+  through `loadMalloy`/`loadDuckDb`/`loadPostgres`/`loadBigQuery`. The drivers pull
+  in native and wasm bundles; `mora --help` must not pay for them, and a
+  BigQuery-free project must not load Google's client libraries.
 - **Templates render strings.** They take options and return text. No file reads,
   no `process.env`, no clock. That is what makes them testable by assertion on
   their output.
@@ -236,7 +236,8 @@ scaffold really writes to a temp directory. The database is not mocked: a compil
 that passes must mean the columns exist, and a mock cannot promise that. Anything
 needing credentials is `describe.skipIf`-gated on an environment variable and
 committed, so a machine that has them proves the wiring rather than a person
-checking by hand.
+checking by hand: `GOOGLE_CLOUD_PROJECT` for BigQuery,
+`MORA_TEST_POSTGRES_DATABASE` plus `POSTGRES_PASSWORD` for Postgres.
 
 **Never scaffold into this repo.** `mora init .` in the working tree will write
 over `AGENTS.md` and friends. Use a temp directory, always.
@@ -306,6 +307,22 @@ Recorded so they are not rediscovered by accident:
   setting one and getting "unable to detect a project id" is not acceptable.
 - **A setting the driver ignores does not get a prompt.** `dataset` was removed
   for exactly this reason. Offering a knob that does nothing is a lie.
+- **A Postgres connection is discrete settings, not a connection string.** Every
+  managed Postgres hands out a `postgres://user:pass@host/db` URL, and taking one
+  as a single `${DATABASE_URL}` would have been fewer prompts. But it puts the host
+  and the database name inside the secret, so `mora.yaml` would no longer say which
+  database a model reads — and that is the thing a reviewer checks. Host, port,
+  database and user are committed; only `password` is a reference.
+- **Raw SQL through the Postgres driver has to be wrapped.** `runSQL` puts every
+  result through the same unwrapping step Malloy's generated SQL relies on: it keeps
+  one column named `row` per row and discards the rest. A flat
+  `SELECT table_schema, ...` comes back as a list of `undefined`, which looks like
+  an empty catalog rather than a mistake, so the table listing selects
+  `TO_JSONB(...) AS row` over a subquery. Do not "simplify" it back.
+- **Prompting and reporting are separate questions.** `--yes` says not to ask
+  anything; it never meant "say nothing". `mora init --yes` used to write ten files
+  and print not one line, so a reader could not tell it from a no-op. Prose is
+  gated on `--json` in every command, and prompts on having a TTY.
 - **Interactive BigQuery setup asks for a project id; it does not go looking.**
   Reading gcloud state to offer a searchable, data-filtered project list was a
   few hundred lines and a dependency to save typing a string a reader knows.
@@ -380,9 +397,10 @@ In rough order, and each one should stay recognisable as the same tool:
    wincing. Anything that makes the checks in `.agents/modeling.md` more
    thorough, or the evidence in the resulting pull request more convincing,
    is the highest-value work available.
-2. **More warehouses.** DuckDB and BigQuery work. Snowflake, Postgres and Trino
+2. **More warehouses.** DuckDB, Postgres and BigQuery work. Snowflake and Trino
    are drivers Malloy already has, and each is a connection type away — the
-   registry in `databases.ts` plus a case in `runtime.ts`.
+   registry in `databases.ts`, a case in `runtime.ts`, and a catalog query in
+   `schema.ts`.
 3. **MCP over the loop.** `schema`, `query` and `validate` against a checkout,
    for agents that prefer tools to shell commands. Serving finished models over
    MCP is Publisher's job and stays there.

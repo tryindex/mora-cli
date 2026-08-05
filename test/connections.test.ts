@@ -8,6 +8,7 @@ import {
   runConnectionTest,
 } from '../src/commands/connection.js';
 import { runQueryCommand } from '../src/commands/query.js';
+import { runSchema } from '../src/commands/schema.js';
 import { runValidate } from '../src/commands/validate.js';
 import { loadConfig } from '../src/config.js';
 import { addConnection, syncEnvExample } from '../src/connections.js';
@@ -28,6 +29,8 @@ const PROJECT_REF = '\u0024{GOOGLE_CLOUD_PROJECT}';
 
 /** A variable no machine will have set, for asserting on the unset case. */
 const UNSET_REF = '\u0024{MORA_TEST_UNSET_CREDENTIAL}';
+
+const PASSWORD_REF = '\u0024{POSTGRES_PASSWORD}';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -435,6 +438,110 @@ describe('mora connection list', () => {
         missingEnvVars: ['MORA_TEST_UNSET_CREDENTIAL'],
       },
     ]);
+  });
+});
+
+describe('mora connection add, Postgres', () => {
+  it('writes the password as a reference and names it in .env.example', async () => {
+    // Whatever this machine has, the point of the assertion is the unset case.
+    vi.stubEnv('POSTGRES_PASSWORD', '');
+    const root = await scaffoldProject();
+
+    const report = await runConnectionAdd(root, 'analytics_db', {
+      type: 'postgres',
+      database: 'shop',
+      json: true,
+    });
+
+    expect(report.connection.settings).toEqual({
+      host: 'localhost',
+      port: '5432',
+      database: 'shop',
+      user: 'postgres',
+      password: PASSWORD_REF,
+    });
+    expect(report.envExample.added).toContain('POSTGRES_PASSWORD');
+    // Nothing is opened while the credential has no value, and the report names
+    // the variable rather than leaving the driver to read PGPASSWORD instead.
+    expect(report.missingEnvVars).toEqual(['POSTGRES_PASSWORD']);
+    expect(report.test).toBeNull();
+  });
+
+  it('refuses to open a connection whose password is unset, by name', async () => {
+    vi.stubEnv('POSTGRES_PASSWORD', '');
+    const root = await scaffoldProject();
+    await addConnection(await loadConfig(root), {
+      name: 'analytics_db',
+      type: 'postgres',
+      settings: { host: 'localhost', port: '5432', database: 'shop', password: PASSWORD_REF },
+      makeDefault: false,
+    });
+
+    const report = await runConnectionTest(root, 'analytics_db', { json: true });
+
+    expect(report.ok).toBe(false);
+    // The variable, not `pg`'s own account of who it failed to authenticate as.
+    expect(report.results[0]?.error).toContain('POSTGRES_PASSWORD');
+  });
+
+  it('reads ssl as a switch, and refuses a value that is not one', async () => {
+    const root = await scaffoldProject();
+    await addConnection(await loadConfig(root), {
+      name: 'managed',
+      type: 'postgres',
+      settings: { host: 'db.example.com', database: 'shop', ssl: 'true' },
+      makeDefault: false,
+    });
+
+    const config = await loadConfig(root);
+    expect(config.connections.find((entry) => entry.name === 'managed')).toMatchObject({
+      type: 'postgres',
+      ssl: true,
+    });
+
+    await writeFile(
+      path.join(root, 'mora.yaml'),
+      (await readFile(path.join(root, 'mora.yaml'), 'utf8')).replace('ssl: "true"', 'ssl: yes'),
+      'utf8',
+    );
+
+    // An unencrypted connection is not something to end up with by accident, so
+    // a value that only looks like a boolean is refused rather than read as false.
+    await expect(loadConfig(root)).rejects.toMatchObject({ code: 'invalid-config' });
+  });
+});
+
+/**
+ * Only runs where a Postgres is reachable, which is nowhere by default. Committed
+ * so a machine that has one proves the driver, the `${VAR}` password and the
+ * catalog query are wired up, rather than a person checking by hand.
+ */
+const postgresDatabase = process.env.MORA_TEST_POSTGRES_DATABASE;
+describe.skipIf(!postgresDatabase)('against a real Postgres', () => {
+  it('opens the connection and lists tables the way a source must write them', async () => {
+    const root = await scaffoldProject();
+
+    const report = await runConnectionAdd(root, 'warehouse', {
+      type: 'postgres',
+      host: process.env.MORA_TEST_POSTGRES_HOST ?? 'localhost',
+      port: process.env.MORA_TEST_POSTGRES_PORT ?? '5432',
+      user: process.env.MORA_TEST_POSTGRES_USER ?? 'postgres',
+      database: postgresDatabase,
+      password: PASSWORD_REF,
+      json: true,
+    });
+
+    expect(report.test?.error).toBeUndefined();
+    expect(report.test?.ok).toBe(true);
+
+    const listed = await runSchema(root, [], { json: true, connection: 'warehouse' });
+    expect(listed.ok).toBe(true);
+    // Malloy's Postgres dialect has no default schema, so an unqualified name is
+    // one that cannot be read back.
+    for (const table of listed.tables ?? []) {
+      expect(table.name).toContain('.');
+      expect(table.schema).toBeTruthy();
+    }
   });
 });
 

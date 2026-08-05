@@ -410,7 +410,13 @@ export async function assertConfigParses(root: string): Promise<void> {
       `Generated ${CONFIG_FILENAME} is not valid YAML: ${
         error instanceof Error ? error.message : String(error)
       }`,
-      { code: 'invalid-config' },
+      {
+        code: 'invalid-config',
+        // Mora rendered this file, so nothing the reader typed can be at fault
+        // except a value that needed quoting. Say so rather than sending them to
+        // fix a template they did not write.
+        hint: 'This is a bug in Mora. Report it at https://github.com/mora/mora-cli/issues with the project name and connection settings you passed.',
+      },
     );
   }
 }

@@ -20,7 +20,9 @@ import {
   DATABASES,
   type DatabaseId,
   isDatabaseId,
+  listDatabases,
   type SettingsContext,
+  settingFlags,
   suggestSetting,
 } from '../databases.js';
 import { describeEnvironment, ENV_FILENAME, readEnvFile } from '../env.js';
@@ -124,12 +126,8 @@ function registerAdd(parent: Command): void {
 
   // One flag per setting, so a connection can be added unattended. Values may be
   // literals or `${VAR}` references; a credential belongs in the latter.
-  for (const id of DATABASE_IDS) {
-    for (const setting of connectionSettings(id, { modelsDir: '<models>' })) {
-      if (!command.options.some((option) => option.long === `--${setting.flag}`)) {
-        command.option(`--${setting.flag} <value>`, `${DATABASES[id].label}: ${setting.label}`);
-      }
-    }
+  for (const { flag, description } of settingFlags(DATABASE_IDS, { modelsDir: '<models>' })) {
+    command.option(`--${flag} <value>`, description);
   }
 
   command
@@ -337,7 +335,7 @@ function selectForTest(config: MoraConfig, name: string | undefined): SupportedC
     if (usable.length === 0) {
       throw new MoraError(`No connection in ${CONFIG_FILENAME} can be opened.`, {
         code: 'no-supported-connection',
-        hint: `Run \`mora connection add\` to declare one. Mora can open ${DATABASE_IDS.join(' and ')} connections.`,
+        hint: `Run \`mora connection add\` to declare one. Mora can open ${listDatabases()} connections.`,
       });
     }
     return usable;
@@ -354,7 +352,7 @@ function selectForTest(config: MoraConfig, name: string | undefined): SupportedC
   if (!found.supported) {
     throw new MoraError(`Mora has no driver for ${found.type} connections.`, {
       code: 'unsupported-connection',
-      hint: `It can open ${DATABASE_IDS.join(' and ')} connections.`,
+      hint: `It can open ${listDatabases()} connections.`,
     });
   }
   return [found];

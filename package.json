@@ -20,11 +20,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/moradata/mora-cli.git"
+    "url": "git+https://github.com/mora/mora-cli.git"
   },
-  "homepage": "https://github.com/moradata/mora-cli#readme",
+  "homepage": "https://github.com/mora/mora-cli#readme",
   "bugs": {
-    "url": "https://github.com/moradata/mora-cli/issues"
+    "url": "https://github.com/mora/mora-cli/issues"
   },
   "keywords": [
     "malloy",
@@ -49,6 +49,7 @@
     "@clack/prompts": "^1.7.0",
     "@malloydata/db-bigquery": "^0.0.426",
     "@malloydata/db-duckdb": "^0.0.426",
+    "@malloydata/db-postgres": "^0.0.426",
     "@malloydata/malloy": "^0.0.426",
     "commander": "^15.0.0",
     "picocolors": "^1.1.1",

@@ -1,7 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Connection, Runtime, TestableConnection } from '@malloydata/malloy';
-import type { BigQueryConnectionConfig, SupportedConnectionConfig } from '../config.js';
+import type {
+  BigQueryConnectionConfig,
+  PostgresConnectionConfig,
+  SupportedConnectionConfig,
+} from '../config.js';
 import { ENV_FILENAME, type EnvLookup, readEnvFile, resolveEnvRefs } from '../env.js';
 import { MoraError } from '../errors.js';
 
@@ -40,6 +44,10 @@ async function loadMalloy() {
 
 async function loadDuckDb() {
   return unwrap(await import('@malloydata/db-duckdb'));
+}
+
+async function loadPostgres() {
+  return unwrap(await import('@malloydata/db-postgres'));
 }
 
 async function loadBigQuery() {
@@ -147,6 +155,15 @@ async function openConnection(
     );
   }
 
+  if (connection.type === 'postgres') {
+    const postgres = await loadPostgres();
+    return new postgres.PostgresConnection(
+      connection.name,
+      undefined,
+      resolvePostgresSettings(connection, lookup),
+    );
+  }
+
   const bigquery = await loadBigQuery();
   const settings = resolveBigQuerySettings(connection, lookup);
   return new bigquery.BigQueryConnection(connection.name, undefined, settings);
@@ -173,6 +190,16 @@ export interface BigQuerySettings {
   serviceAccountKeyPath?: string;
 }
 
+/** The subset of the Postgres driver's options a Mora connection can set. */
+export interface PostgresSettings {
+  host?: string;
+  port?: number;
+  databaseName?: string;
+  username?: string;
+  password?: string;
+  ssl?: boolean;
+}
+
 /**
  * BigQuery settings with their `${VAR}` references filled in. A reference with
  * no value stops the command: silently connecting to whatever project the
@@ -182,12 +209,7 @@ function resolveBigQuerySettings(
   connection: BigQueryConnectionConfig,
   lookup: EnvLookup,
 ): BigQuerySettings {
-  const missing = new Set<string>();
-  const resolve = (setting: string | undefined): string | undefined => {
-    const resolved = resolveEnvRefs(setting, lookup);
-    for (const name of resolved.missing) missing.add(name);
-    return resolved.value;
-  };
+  const { resolve, assertResolved } = resolver(connection.name, lookup);
 
   const projectId = resolve(connection.projectId);
   const settings = {
@@ -201,20 +223,76 @@ function resolveBigQuerySettings(
     serviceAccountKeyPath: resolve(connection.serviceAccountKeyPath),
   };
 
-  if (missing.size > 0) {
-    const names = [...missing].sort();
-    throw new MoraError(
-      `Connection "${connection.name}" needs ${names.join(', ')}, which ${
-        names.length === 1 ? 'is' : 'are'
-      } not set.`,
-      {
-        code: 'missing-credentials',
-        hint: `Set ${names.length === 1 ? 'it' : 'them'} in your environment or in ${ENV_FILENAME}. \`mora init\` creates that file from .env.example.`,
-      },
-    );
-  }
-
+  assertResolved();
   return settings;
+}
+
+/**
+ * Postgres settings with their `${VAR}` references filled in. Named for the
+ * driver's own fields rather than the YAML keys, because `pg` reads `PGHOST`,
+ * `PGPASSWORD` and friends whenever an option is absent: a setting that arrives
+ * as `undefined` is not a default, it is a different database.
+ */
+function resolvePostgresSettings(
+  connection: PostgresConnectionConfig,
+  lookup: EnvLookup,
+): PostgresSettings {
+  const { resolve, assertResolved } = resolver(connection.name, lookup);
+
+  const settings = {
+    host: resolve(connection.host),
+    port: readPort(connection.name, resolve(connection.port)),
+    databaseName: resolve(connection.database),
+    username: resolve(connection.user),
+    password: resolve(connection.password),
+    ssl: connection.ssl,
+  };
+
+  assertResolved();
+  return settings;
+}
+
+function readPort(connectionName: string, value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new MoraError(`Connection "${connectionName}" has an invalid port: "${value}".`, {
+      code: 'invalid-setting',
+      hint: 'Set `port` on the connection in mora.yaml to a number, such as 5432.',
+    });
+  }
+  return port;
+}
+
+/**
+ * Fills in `${VAR}` references across one connection's settings, collecting the
+ * names that have no value so the failure can name all of them at once. Nothing
+ * falls back to the ambient environment: connecting to the wrong database
+ * quietly is worse than not connecting.
+ */
+function resolver(connectionName: string, lookup: EnvLookup) {
+  const missing = new Set<string>();
+
+  return {
+    resolve(setting: string | undefined): string | undefined {
+      const resolved = resolveEnvRefs(setting, lookup);
+      for (const name of resolved.missing) missing.add(name);
+      return resolved.value;
+    },
+    assertResolved(): void {
+      if (missing.size === 0) return;
+      const names = [...missing].sort();
+      throw new MoraError(
+        `Connection "${connectionName}" needs ${names.join(', ')}, which ${
+          names.length === 1 ? 'is' : 'are'
+        } not set.`,
+        {
+          code: 'missing-credentials',
+          hint: `Set ${names.length === 1 ? 'it' : 'them'} in your environment or in ${ENV_FILENAME}. \`mora init\` creates that file from .env.example.`,
+        },
+      );
+    },
+  };
 }
 
 async function readEnvLookup(root?: string): Promise<EnvLookup> {
