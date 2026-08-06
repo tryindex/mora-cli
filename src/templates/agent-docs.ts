@@ -177,11 +177,12 @@ The shape of the work, and none of the steps are optional:
 
 \`\`\`
 1. mora schema        what the warehouse holds
-2. mora query -f      what is true of it, checked rather than assumed
-3. ask a human        which of it is worth modelling
-4. write the models   documented definitions, in ${modelsDir}/
-5. mora validate      they compile, so the columns really exist
-6. pull request       a human approves them, which is what makes them trustworthy
+2. mora sync          copy those tables locally, so checking them is free
+3. mora query -f      what is true of it, checked rather than assumed
+4. ask a human        which of it is worth modelling
+5. write the models   documented definitions, in ${modelsDir}/
+6. mora validate      they compile, so the columns really exist
+7. pull request       a human approves them, which is what makes them trustworthy
 \`\`\`
 
 ## When this applies
@@ -204,6 +205,19 @@ mora schema orders customers --json      # columns and types, several at once
 Run the listing first. It is where valid table names come from, so no name ever
 has to be guessed, and every name it prints goes inside
 \`${connectionName}.table('...')\` unchanged.
+
+Once you know which tables matter, copy them locally. Everything in this step is
+a question nobody will act on, and there are going to be a lot of them:
+
+\`\`\`bash
+mora sync --table ${sampleTablePath}     # or plain \`mora sync\` once a model reads it
+\`\`\`
+
+After that a probe reads the local copy automatically and costs nothing. It is a
+copy, so treat any number from it as provisional — the result says \`local: true\`
+and carries \`syncedAt\`, and re-running with \`--remote\` gives the warehouse's
+answer. **Before a number goes into a doc string or a pull request, check it with
+\`--remote\`.** Skipping the sync is fine; every command below works either way.
 
 Then query the data. Nothing is modelled yet, so declare a throwaway source in
 the probe itself and run against that. Unreviewed Malloy is a whole document, so
@@ -391,6 +405,12 @@ mora validate                     # compiling proves the columns really exist
 mora query orders.revenue_by_month
 \`\`\`
 
+Both of these read the warehouse, and that is the point of running them here. If
+you used \`mora sync\` while exploring, every number you gathered came from a copy;
+re-check the ones you are about to write down. A caveat in a doc string that was
+true of a stale extract and is not true of the warehouse is worse than no caveat,
+because it reads as though somebody verified it.
+
 Spot-check each measure against something known before reporting anything. Then
 commit and open a pull request. Say in it what you checked and what you found,
 including the surprises, and reconcile each metric against the official number
@@ -419,10 +439,11 @@ conventions" otherwise.
 
 Read this before running a \`mora\` command.
 
-There are five commands, and four of them are one loop: \`schema\` to see what
+There are six commands, and four of them are one loop: \`schema\` to see what
 the warehouse holds, \`query\` with unreviewed Malloy to check what is true of it,
 \`validate\` to prove a model you wrote compiles, \`query\` by name to run a
-definition someone reviewed. \`init\` and \`connection\` set the project up so the
+definition someone reviewed. \`sync\` makes the checking step cheap by copying
+those tables locally, and \`init\` and \`connection\` set the project up so the
 loop can run.
 
 Every command accepts \`--json\` for a machine-readable report instead of prose,
@@ -477,6 +498,8 @@ Flags:
   definition compiles to before executing it.
 - \`--limit <n>\` caps the rows returned. Keep it small: rows land in your
   context.
+- \`--local\` reads the local cache and fails rather than falling back;
+  \`--remote\` forces the warehouse. See "Local vs warehouse" below.
 
 **One \`run:\` per document.** Malloy runs only the last query in a document, so a
 file with several \`run:\` statements is refused (exit \`2\`, code
@@ -485,12 +508,56 @@ answered all of them. Ask one question per document, or combine the checks into 
 single \`run:\` with several aggregates.
 
 \`--json\` reports \`{ ok, command: 'query', name, reviewed, model, sql, executed,
-rows, rowCount, truncated, nextSteps }\`. \`executed\` is false under \`--sql\`, so
-an empty \`rows\` is never mistaken for a query that matched nothing. An unknown
-name exits \`1\` with code \`unknown-definition\` and lists what does exist.
+local, syncedAt, fellBackToWarehouse, cappedTables, rows, rowCount, truncated,
+nextSteps }\`. \`executed\` is false under \`--sql\`, so an empty \`rows\` is never
+mistaken for a query that matched nothing. An unknown name exits \`1\` with code
+\`unknown-definition\` and lists what does exist.
 
 Always include the SQL, or the definitions used, alongside a number you report.
 An answer nobody can audit is not worth much.
+
+### Local vs warehouse
+
+If \`mora sync\` has been run, a probe (\`-f\` or \`-e\`) reads the local cache when
+it holds the tables, and the warehouse when it does not. A name always reads the
+warehouse unless you pass \`--local\`.
+
+The split is deliberate. A probe is a question about the data that nobody will
+act on, and there are dozens of them; a named definition is an answer somebody
+acts on, and one that is three days old is worse than one that took four
+seconds.
+
+Read \`local\` on every result before you report a number:
+
+- \`local: true\` — these rows are a copy, as old as \`syncedAt\`. Say so, and
+  re-run with \`--remote\` before the number goes anywhere that matters.
+- \`cappedTables\` non-empty — the cache stopped at a row limit for those tables.
+  A count or a fraction over one of them is **not** the warehouse's answer.
+  Check it with \`--remote\`.
+- \`fellBackToWarehouse: true\` — the cache could not answer, so these rows are
+  current. Run \`mora sync\` if you will be probing that table again.
+
+## mora sync
+
+Copies the tables the models read into local Parquet under \`.mora/cache/\`, so
+probing them costs nothing and hits no warehouse bill. It is gitignored, and
+nothing runs it for you: the cache is exactly as old as the last time you did.
+
+\`\`\`bash
+mora sync                                # every table the models read
+mora sync --status                       # what is cached and how old, syncs nothing
+mora sync --table analytics.orders       # also cache a table no model reads yet
+mora sync --limit 5000                   # smaller extracts
+\`\`\`
+
+Run it when you are about to check a lot of assumptions about the same tables —
+step 1 of \`.agents/modeling.md\` is the case it was built for. Re-run it whenever
+the answers start to matter, because nothing refreshes on its own.
+
+\`--json\` reports \`{ ok, command: 'sync', cacheDir, executed, models,
+modelFailures, synced, cached, syncedAt, age, rows, limit, nextSteps }\`. A table
+that could not be read is an entry in \`synced\` with \`status: 'failed'\`, not a
+dead command: the tables that did come through are still worth having.
 
 ## mora validate
 
@@ -499,6 +566,11 @@ file, and before opening a pull request. Malloy resolves table schemas while
 compiling, so a pass means the model parses *and* the columns it names really
 exist. \`--json\` lists each model with its sources, named queries and any compile
 error.
+
+\`--local\` compiles against the cache instead, which is fast enough to run on
+every edit. It is a weaker promise — it proves the columns exist in the copy, so
+a column added upstream since the sync is not there and one dropped upstream
+still is. Run it without \`--local\` before opening a pull request.
 
 ## mora schema [tables...]
 

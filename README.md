@@ -12,23 +12,27 @@ nobody has modelled to definitions a human approved, written in
 
 ```
 1. mora schema        what the warehouse holds
-2. mora query -f      what is true of it, checked rather than assumed
-3. ask a human        which of it is worth modelling
-4. write the models   documented definitions, in metrics/
-5. mora validate      they compile, so the columns really exist
-6. pull request       a human approves them, which is what makes them trustworthy
+2. mora sync          copy those tables locally, so checking them is free
+3. mora query -f      what is true of it, checked rather than assumed
+4. ask a human        which of it is worth modelling
+5. write the models   documented definitions, in metrics/
+6. mora validate      they compile, so the columns really exist
+7. pull request       a human approves them, which is what makes them trustworthy
 ```
 
-The middle two steps are the point. An agent that reads a schema and writes
+Steps 2 and 3 are the point. An agent that reads a schema and writes
 `revenue is total.sum()` has guessed whether `total` includes tax; one that ran
-the query first has not. And a definition nobody reviewed is worth no more than
-the SQL it replaced, which is why the loop ends in a pull request rather than in
-an answer.
+the query first has not. That checking takes dozens of queries whose answers
+never ship, which is why `mora sync` copies the tables locally first — probing a
+local Parquet file costs nothing, so the discipline stops being the expensive
+part. The copy always says it is a copy. And a definition nobody reviewed is
+worth no more than the SQL it replaced, which is why the loop ends in a pull
+request rather than in an answer.
 
 Mora is a CLI, so any agent that can run a command can use it: Cursor, Claude
 Code, Codex, or your own.
 
-> **Status: early.** Five commands, DuckDB, Postgres and BigQuery. See
+> **Status: early.** Six commands, DuckDB, Postgres and BigQuery. See
 > [Roadmap](#roadmap).
 
 ## Install
@@ -134,7 +138,23 @@ $ mora schema data/orders.csv
 └  1 table, 5 columns.
 ```
 
-**2. Check what is true of it.** There is a `status` column, so "revenue" has a
+**2. Copy it locally, so checking is free.** On a CSV this changes nothing; on a
+real warehouse it is the difference between a dozen careful checks and a dozen
+billed queries. Nothing here needs it, and the rest of the walkthrough is
+identical without it:
+
+```
+$ mora sync --table data/orders.csv
+◇  Cached in .mora/cache/ ──────────────╮
+│    data/orders.csv  5 rows  just now  │
+├───────────────────────────────────────╯
+└  1 table, 5 rows.
+```
+
+From here a probe reads that copy and says so, and `mora sync --status` says how
+old it is. A named definition still goes to the warehouse.
+
+**3. Check what is true of it.** There is a `status` column, so "revenue" has a
 decision in it. Ask the data, in `probe.malloy`:
 
 ```malloy
@@ -163,7 +183,7 @@ $ mora query -f probe.malloy
 `id` is unique, so summing is safe, and one row in five is refunded — which is
 the number that makes the next step a decision rather than a guess.
 
-**3. Decide, then write it down.** Whether a refund counts is yours to settle, not
+**4. Decide, then write it down.** Whether a refund counts is yours to settle, not
 your agent's. Say it excludes them, and `metrics/orders.malloy` records both the
 rule and the reason:
 
@@ -186,7 +206,7 @@ source: orders is duckdb.table('data/orders.csv') extend {
 }
 ```
 
-**4. Prove it compiles, then use it.** Malloy resolves table schemas at compile
+**5. Prove it compiles, then use it.** Malloy resolves table schemas at compile
 time, so a pass means the columns really exist:
 
 ```
@@ -275,10 +295,12 @@ written against. A table that cannot be read carries its own `error` and makes
 `ok` false, so an empty column list is never mistaken for a table with no
 columns.
 
-There is no cached catalog on disk, and deliberately so. The listing is cheap, an
-agent keeps the answer in context for as long as it is working, and the only
-thing a stored copy would add is the ability to outlive the warehouse it
-describes. For a very large catalog, narrow it with `--pattern`; `truncated` says
+There is no cached catalog on disk, and deliberately so — `mora sync` caches
+rows, not the table listing. The listing is cheap, an agent keeps the answer in
+context for as long as it is working, and the only thing a stored copy would add
+is the ability to outlive the warehouse it describes: a name that has since been
+dropped is worse than a slow answer. For a very large catalog, narrow it with
+`--pattern`; `truncated` says
 when a listing was cut short.
 
 What gets listed depends on the connection. A DuckDB connection reads files as
@@ -312,6 +334,8 @@ Options:
   -C, --directory <dir>  project directory (default: .)
   --sql                  print the generated SQL without running it
   -l, --limit <n>        largest number of rows to return (default: 50)
+  --local                read the local cache, failing rather than falling back
+  --remote               read the warehouse, even where the cache would serve
   --json                 print a machine-readable result instead of prose
 ```
 
@@ -361,10 +385,70 @@ to raw SQL, and it is how the data gets checked in the first place — but the
 output nudges toward promoting anything worth keeping into a named definition,
 where a pull request can catch a mistake before a dashboard does.
 
-`--json` reports `{ ok, command, name, reviewed, model, sql, executed, rows,
-rowCount, truncated, nextSteps }`. `executed` is separate from `rows` so a query
-that never ran cannot be mistaken for one that matched nothing. An unknown name
-exits `1` and lists the names that do exist.
+**Local or warehouse.** If [`mora sync`](#mora-sync) has filled the cache, a
+probe reads it and falls back to the warehouse for a table it does not hold. A
+name always reads the warehouse unless you pass `--local`.
+
+That split is the same reviewed/unreviewed line drawn again. A probe is a
+question nobody acts on and there are dozens of them, so a copy a few hours old
+buys real speed for nothing that matters. A named definition is an answer
+somebody acts on, and a stale number there is the failure Mora exists to
+prevent. `--local` and `--remote` override either way.
+
+Every result says which it was: `local`, `syncedAt`, and `cappedTables` for
+extracts that stopped at the row limit, where a count is not the warehouse's
+count. `fellBackToWarehouse` marks a probe the cache could not answer.
+
+`--json` reports `{ ok, command, name, reviewed, model, sql, executed, local,
+syncedAt, fellBackToWarehouse, cappedTables, rows, rowCount, truncated,
+nextSteps }`. `executed` is separate from `rows` so a query that never ran cannot
+be mistaken for one that matched nothing. An unknown name exits `1` and lists the
+names that do exist.
+
+## `mora sync`
+
+```
+Usage: mora sync [options]
+
+Options:
+  -c, --connection <name>  only sync this connection (default: all of them)
+  -t, --table <path>       also cache a table no model reads yet
+  -l, --limit <n>          rows per table to stop at (default: 100000)
+  --status                 report what the cache holds without syncing anything
+  -C, --directory <dir>    project directory (default: .)
+  --json                   print a machine-readable result instead of prose
+```
+
+Copies every table the models read — including the ones reached through joins,
+which are found by compiling rather than by scanning the text — into Parquet
+under `.mora/cache/`, plus a DuckDB catalog of views over them. Probing then
+costs nothing and hits no warehouse bill.
+
+```bash
+mora sync                                # every table the models read
+mora sync --status                       # what is cached and how old
+mora sync --table analytics.orders       # a table no model reads yet
+```
+
+This is the one thing Mora writes to disk that is not a source file, and the
+rules around it are deliberate:
+
+- **Explicit, never scheduled.** Nothing refreshes on its own. The cache is
+  exactly as old as the last time you ran this.
+- **Gitignored.** `.mora/` is in the scaffolded `.gitignore`, so warehouse rows
+  cannot be committed by accident.
+- **Never silent.** Every result that read it carries `local` and `syncedAt`,
+  and a table that stopped at `--limit` is marked capped everywhere it appears —
+  a count over a capped extract is not the real count.
+- **Not the schema.** `mora schema` still reads the catalog live. A stale table
+  listing sends an agent to a name that no longer exists, which is worse than a
+  slow answer.
+
+A table that cannot be read is reported as a failure in `synced` rather than
+killing the run, because the tables that did come through are still worth having.
+
+Extraction is [`@moradata/cache`](https://www.npmjs.com/package/@moradata/cache),
+which can also be driven on its own.
 
 ## `mora validate`
 
@@ -372,6 +456,7 @@ exits `1` and lists the names that do exist.
 Usage: mora validate [options] [directory]
 
 Options:
+  --local              compile against the local cache instead of the warehouse
   --json               print a machine-readable result instead of prose
 ```
 
@@ -380,6 +465,11 @@ directory, and compiles each one. Run it after editing a model, and in CI: it is
 the check that keeps a semantic layer honest, because Malloy resolves table
 schemas at compile time, so a pass means the model parses *and* the referenced
 columns really exist.
+
+`--local` compiles against what `mora sync` copied, which is quick enough to run
+on every edit. It is a weaker promise — it proves the columns exist in the copy,
+so a column added upstream since the sync is not there and one dropped upstream
+still is. CI and the last run before a pull request should not use it.
 
 ```
 $ mora validate
@@ -692,6 +782,16 @@ exist; running proves the database will do the work. A permission error on a
 specific table, a query that times out, or a type the driver will not cast are all
 things only execution can find. The error is the database's own, reported verbatim.
 
+**A number changed and nothing in the model did.** Check `local` on the result.
+A probe reads the cache when one exists, so two runs either side of a
+`mora sync` legitimately disagree. `--remote` gives the warehouse's answer, and
+`mora sync --status` says how old the copy is.
+
+**A count from the cache looks too round.** Check `cappedTables`. `mora sync`
+stops at `--limit` rows per table, so a count or a fraction over a capped
+extract is the copy's answer and not the warehouse's. Raise the limit, or check
+that number with `--remote`.
+
 ## Roadmap
 
 In rough order:
@@ -701,8 +801,8 @@ In rough order:
   opens. This is the part of Mora that is actually its own.
 - **More warehouses.** DuckDB, Postgres and BigQuery work today; Snowflake and
   Trino are drivers Malloy already has, and each is a connection type away.
-- **MCP over the loop** — `schema`, `query` and `validate` against a checkout,
-  for agents that prefer tools to shell commands.
+- **MCP over the loop** — `schema`, `sync`, `query` and `validate` against a
+  checkout, for agents that prefer tools to shell commands.
 
 ## Development
 

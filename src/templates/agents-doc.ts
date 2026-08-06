@@ -52,6 +52,7 @@ function renderManaged(options: AgentsDocOptions): string {
     `- \`${agentDocsDir}/modeling.md\` - how to turn a warehouse table into reviewed definitions.`,
     `- \`${agentDocsDir}/malloy.md\` - how to write Malloy in this project.`,
     `- \`${agentDocsDir}/mora.md\` - the \`mora\` commands, their flags and output.`,
+    '- `.mora/cache/` - local copies of warehouse tables, from `mora sync`. Gitignored, and never a source of truth.',
   ].join('\n');
 
   return `Mora maintains this section, between its \`mora:begin\`/\`mora:end\` markers.
@@ -108,6 +109,10 @@ below ends in a pull request rather than in an answer.
    say, so ask before defining one and write the answer into its doc string.
 7. Report the SQL or the definitions behind every number, so a human can audit
    how the answer was produced.
+8. \`mora sync\` copies warehouse tables locally so probing is free, and probes
+   then read that copy by default. Check \`local\` on every result: if it is
+   true, the number is as old as \`syncedAt\`, and it must be re-checked with
+   \`--remote\` before it goes into a doc string, a pull request, or an answer.
 
 ## Required reading
 

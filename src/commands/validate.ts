@@ -2,12 +2,14 @@ import path from 'node:path';
 import * as prompts from '@clack/prompts';
 import type { Command } from 'commander';
 import pc from 'picocolors';
+import { type LocalCache, openLocalCache, requireCache } from '../cache.js';
 import { loadConfig, type MoraConfig, supportedConnections } from '../config.js';
 import { ExitCode } from '../errors.js';
 import { compileProject, type ModelCompileResult } from '../malloy/compile.js';
 import { requireConnection, requireModels } from '../project.js';
 
 interface ValidateFlags {
+  local?: boolean;
   json?: boolean;
 }
 
@@ -23,6 +25,13 @@ export interface ProjectValidation {
   connection: string;
   /** Every connection the models could read from, by name. */
   connections: string[];
+  /**
+   * True when the models were compiled against the local cache rather than the
+   * warehouse. A pass then means the columns exist in the copy, which is a
+   * weaker promise: a column added upstream since the last sync is not there,
+   * and one dropped upstream still is.
+   */
+  local: boolean;
   models: ModelCompileResult[];
   summary: CompileSummary;
 }
@@ -42,16 +51,27 @@ export function registerValidateCommand(program: Command): void {
     .command('validate')
     .description('Compile every Malloy model in the project')
     .argument('[directory]', 'project directory', '.')
+    .option('--local', 'compile against the local cache instead of the warehouse')
     .option('--json', 'print a machine-readable result instead of prose')
     .addHelpText(
       'after',
       `
+What a pass means:
+  Malloy resolves table schemas while it compiles, so a pass means the model
+  parses and the columns it names really exist. That is the point of the check.
+
+  --local compiles against what \`mora sync\` copied, which is fast enough to run
+  on every edit but is a weaker promise: it proves the columns exist in the copy.
+  A column added upstream since the sync is not there, and one dropped upstream
+  still is. Run it without --local before opening a pull request.
+
 Agent usage:
   Exit codes: ${ExitCode.ok} every model compiles, ${ExitCode.failure} at least one failed
   or the project could not be read, ${ExitCode.usage} bad usage.
 
 Examples:
   $ mora validate
+  $ mora validate --local
   $ mora validate ./analytics --json`,
     )
     .action(async (directory: string, flags: ValidateFlags) => {
@@ -77,7 +97,7 @@ export async function runValidate(
     prompts.intro(pc.bgCyan(pc.black(' mora validate ')));
   }
 
-  const validation = await validateProject(config, { prose });
+  const validation = await validateProject(config, { prose, local: flags.local });
 
   const report: ValidateReport = {
     ok: validation.summary.failed === 0,
@@ -96,6 +116,8 @@ export async function runValidate(
 
 export interface ValidateProjectOptions {
   prose?: boolean;
+  /** Compile against the local cache rather than opening the warehouse. */
+  local?: boolean;
   /**
    * Report every model as skipped instead of compiling, for a caller that
    * already knows the attempt cannot succeed. `mora init` uses this when a
@@ -123,6 +145,7 @@ export async function validateProject(
     return {
       connection: defaultConnection.name,
       connections: names,
+      local: false,
       models: modelPaths.map((path) => ({
         path,
         status: 'skipped' as const,
@@ -132,16 +155,21 @@ export async function validateProject(
     };
   }
 
+  if (options.local) requireCache(config);
+
   const spinner = options.prose && process.stdout.isTTY ? prompts.spinner() : undefined;
   spinner?.start(`Compiling ${count(modelPaths.length, 'model')}`);
 
+  let cache: LocalCache | null = null;
   let models: ModelCompileResult[];
   try {
+    cache = options.local ? await openLocalCache(config) : null;
     models = await compileProject({
       root: config.root,
       modelPaths,
       declaredConnections: config.connections,
       connections,
+      openedConnections: cache?.connections,
       defaultConnectionName: defaultConnection.name,
     });
   } catch (error) {
@@ -149,6 +177,8 @@ export async function validateProject(
     // credential. That is one problem with the project, not one per model.
     spinner?.stop('Could not open the project connections');
     throw error;
+  } finally {
+    await cache?.close().catch(() => undefined);
   }
 
   const summary = summarize(models);
@@ -161,6 +191,7 @@ export async function validateProject(
   return {
     connection: defaultConnection.name,
     connections: connections.map((connection) => connection.name),
+    local: Boolean(options.local),
     models,
     summary,
   };
@@ -183,11 +214,21 @@ function reportProse(report: ValidateReport): void {
     return;
   }
 
+  if (report.local) {
+    prompts.log.warn(
+      pc.yellow('Against the cache: ') +
+        'this proves the columns exist in the local copy, not in the\n' +
+        'warehouse. Run `mora validate` without --local before opening a pull request.',
+    );
+  }
+
   const { passed, failed } = report.summary;
-  const against = report.connections.map((name) => pc.cyan(name)).join(', ');
+  const against = report.local
+    ? pc.yellow('the local cache')
+    : report.connections.map((name) => pc.cyan(name)).join(', ') || pc.cyan(report.connection);
   prompts.outro(
     report.ok
-      ? `${count(passed, 'model')} compiled against ${against || pc.cyan(report.connection)}.`
+      ? `${count(passed, 'model')} compiled against ${against}.`
       : pc.red(`${count(failed, 'model')} failed to compile.`),
   );
 }

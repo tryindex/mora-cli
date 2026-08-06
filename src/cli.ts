@@ -5,6 +5,7 @@ import { registerConnectionCommand } from './commands/connection.js';
 import { registerInitCommand } from './commands/init.js';
 import { registerQueryCommand } from './commands/query.js';
 import { registerSchemaCommand } from './commands/schema.js';
+import { registerSyncCommand } from './commands/sync.js';
 import { registerValidateCommand } from './commands/validate.js';
 import { ExitCode, type MoraError, toMoraError } from './errors.js';
 import { CLI_VERSION } from './version.js';
@@ -21,6 +22,7 @@ function buildProgram(): Command {
       `${pkg.description}\n\n` +
         'Mora is built to be driven by a coding agent. The loop it exists for:\n' +
         '  mora schema      what the warehouse holds\n' +
+        '  mora sync        copy those tables locally, so checking them is free\n' +
         '  mora query -f    check what is true of it before modelling it\n' +
         '  mora validate    the model compiles, so the columns really exist\n' +
         '  mora query       run a definition a human reviewed\n\n' +
@@ -36,6 +38,7 @@ function buildProgram(): Command {
   registerInitCommand(program);
   registerConnectionCommand(program);
   registerSchemaCommand(program);
+  registerSyncCommand(program);
   registerQueryCommand(program);
   registerValidateCommand(program);
 

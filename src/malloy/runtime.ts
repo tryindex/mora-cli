@@ -16,6 +16,16 @@ export interface RuntimeRequest {
   defaultConnectionName?: string;
   /** Project root, used to find the `.env` that credentials may come from. */
   root?: string;
+  /**
+   * Connections the caller has already opened, keyed by the name models know
+   * them by. When present these are used instead of opening `connections`, and
+   * closing them stays the caller's job.
+   *
+   * This is how a model runs against the local cache without being rewritten:
+   * every warehouse name is bound to a DuckDB connection over the cached
+   * catalog, so `warehouse.table('analytics.orders')` resolves either way.
+   */
+  openedConnections?: ReadonlyMap<string, Connection>;
 }
 
 export interface OpenRuntime {
@@ -75,16 +85,19 @@ export async function createRuntime(
     return { ok: false, reason: describeError(error) };
   }
 
-  const lookup = await readEnvLookup(request.root);
-  const opened = new Map<string, Connection>();
+  const borrowed = request.openedConnections;
+  const opened = borrowed ? new Map(borrowed) : new Map<string, Connection>();
 
-  try {
-    for (const connection of request.connections) {
-      opened.set(connection.name, await openConnection(connection, lookup));
+  if (!borrowed) {
+    const lookup = await readEnvLookup(request.root);
+    try {
+      for (const connection of request.connections) {
+        opened.set(connection.name, await openConnection(connection, lookup));
+      }
+    } catch (error) {
+      await closeAll(opened);
+      throw error;
     }
-  } catch (error) {
-    await closeAll(opened);
-    throw error;
   }
 
   const runtime = new malloy.Runtime({
@@ -94,7 +107,13 @@ export async function createRuntime(
     },
   });
 
-  return { ok: true, runtime, close: () => closeAll(opened) };
+  return {
+    ok: true,
+    runtime,
+    // Borrowed handles outlive this runtime: the caller opened them and may
+    // still be using them, so closing here would pull the floor out.
+    close: borrowed ? async () => undefined : () => closeAll(opened),
+  };
 }
 
 /**
@@ -140,6 +159,42 @@ export async function testConnection(
   root?: string,
 ): Promise<void> {
   await withConnection(connection, root, (opened) => (opened as TestableConnection).test());
+}
+
+/**
+ * A DuckDB connection over a database file, under a name of the caller's
+ * choosing. The local cache is a DuckDB database that no `mora.yaml` declares,
+ * so it needs opening without a connection config — and it goes through here so
+ * the driver is still loaded in exactly one place.
+ */
+export async function openDuckDb(
+  name: string,
+  database: string,
+  workingDirectory: string,
+): Promise<Connection> {
+  const duckdb = await loadDuckDb();
+  return new duckdb.DuckDBConnection(name, database, workingDirectory);
+}
+
+/**
+ * Opens every given connection, or nothing at all: a half-open set would let a
+ * caller sync some tables and silently miss the rest.
+ */
+export async function openConnections(
+  connections: readonly SupportedConnectionConfig[],
+  root?: string,
+): Promise<{ opened: Map<string, Connection>; close: () => Promise<void> }> {
+  const lookup = await readEnvLookup(root);
+  const opened = new Map<string, Connection>();
+  try {
+    for (const connection of connections) {
+      opened.set(connection.name, await openConnection(connection, lookup));
+    }
+  } catch (error) {
+    await closeAll(opened);
+    throw error;
+  }
+  return { opened, close: () => closeAll(opened) };
 }
 
 async function openConnection(

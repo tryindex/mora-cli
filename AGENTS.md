@@ -33,11 +33,12 @@ Mora is a command line for one loop, and the loop is the product:
 
 ```
 1. mora schema        what the warehouse holds
-2. mora query -f      what is true of it, checked rather than assumed
-3. ask a human        which of it is worth modelling
-4. write the models   documented definitions, in metrics/
-5. mora validate      they compile, so the columns really exist
-6. pull request       a human approves them, which is what makes them trustworthy
+2. mora sync          copy those tables locally, so checking them is free
+3. mora query -f      what is true of it, checked rather than assumed
+4. ask a human        which of it is worth modelling
+5. write the models   documented definitions, in metrics/
+6. mora validate      they compile, so the columns really exist
+7. pull request       a human approves them, which is what makes them trustworthy
 ```
 
 Three consequences follow, and they are the whole design:
@@ -67,8 +68,9 @@ Mora is the **authoring** half of a semantic layer. Deliberately out of scope:
   presented.
 - **A DSL of our own.** Models are Malloy. If Malloy needs a feature, the fix
   belongs upstream, not in a Mora abstraction that hides it.
-- **Warehouse management.** Mora reads. It does not migrate schemas, load data,
-  or schedule anything.
+- **Warehouse management.** Mora reads. It does not migrate schemas, write to a
+  warehouse, or schedule anything. `mora sync` copies rows *out* to a local
+  cache, on demand and never on a timer; nothing in Mora runs on its own.
 - **Wrapping things the agent can already do.** The agent is in the checkout. It
   can read `metrics/*.malloy` and it can read a README. A command that only
   reformats something already on disk is surface area with no user.
@@ -152,9 +154,17 @@ answer. It does not write a model: what belongs there is sources over the
 reader's own tables, and only they know which. It does not write anything a
 project might not need.
 
-**Five commands, and each one earns its place.** `init` and `connection` set a
-project up; `schema`, `query` and `validate` are the loop. A sixth needs to be
-something an agent cannot already do with the file system and these five.
+**Six commands, and each one earns its place.** `init` and `connection` set a
+project up; `schema`, `query` and `validate` are the loop, and `sync` makes its
+slowest step cheap. A seventh needs to be something an agent cannot already do
+with the file system and these six.
+
+**A copy is never allowed to look like the truth.** The cache exists so probing
+is free, and every result that came out of it says so — `local` and `syncedAt`
+in the report, a warning in the prose, a next step telling the reader to check
+with `--remote`. There is no flag to turn that off and no tidier output that
+drops it. The moment a cached number is indistinguishable from a live one, the
+cache has become the thing this tool argues against.
 
 ## Architecture
 
@@ -164,7 +174,7 @@ src/commands/*.ts     one file per command: flags, prompts, prose, JSON report
 src/malloy/*.ts       the only code that imports Malloy
 src/templates/*.ts    pure render functions, no I/O
 src/*.ts              domain: config, connections, env, scaffold, version,
-                      project, errors, databases
+                      project, errors, databases, cache
 ```
 
 Rules that keep the layers honest:
@@ -173,6 +183,17 @@ Rules that keep the layers honest:
   through `loadMalloy`/`loadDuckDb`/`loadPostgres`/`loadBigQuery`. The drivers pull
   in native and wasm bundles; `mora --help` must not pay for them, and a
   BigQuery-free project must not load Google's client libraries.
+- **Only `src/cache.ts` imports `@moradata/cache`,** lazily, for the same reason
+  and one more: the cache package takes explicit paths and already-opened
+  connections, and translating a Mora project into those is the whole job of
+  that file. A command reaching for `@moradata/cache` means the translation has
+  leaked upward.
+- **The cache is a set of connections, not a second runtime.** `openLocalCache`
+  hands back one DuckDB connection per declared connection name, and they go
+  into `createRuntime` as `openedConnections`. That is why `query --local` and
+  `validate --local` needed no new compile path: the substitution happens under
+  the table paths, so a model runs unchanged. Borrowed connections are closed by
+  whoever opened them, never by the runtime.
 - **Templates render strings.** They take options and return text. No file reads,
   no `process.env`, no clock. That is what makes them testable by assertion on
   their output.
@@ -328,12 +349,52 @@ Recorded so they are not rediscovered by accident:
   few hundred lines and a dependency to save typing a string a reader knows.
   Unattended runs always passed `--project-id` anyway, so none of it was on the
   path an agent takes.
-- **`mora schema` reads the catalog live; nothing is cached to disk.** A snapshot
-  is a second source of truth whose one distinguishing property is outliving the
+- **`mora schema` reads the catalog live, and still does.** A schema snapshot is
+  a second source of truth whose one distinguishing property is outliving the
   warehouse it describes, and an agent proposing joins from a stale dump is
   exactly the quiet wrongness Mora exists to prevent. The caller that would
   re-read a cache keeps the listing in its own context for as long as it is
   working, and the listing is a directory walk or one `INFORMATION_SCHEMA` query.
+  `mora sync` caches *rows*, and deliberately not this: the listing is where
+  valid table names come from, and a name that no longer exists is worse than a
+  slow answer. There is no `mora schema --local`.
+- **`mora sync` caches rows, and the cache announces itself everywhere.** The
+  unsolved half of modelling is checking assumptions — is this join really
+  one-to-one, what fraction of this column is null — and those are dozens of
+  queries whose answers never ship. Paying warehouse latency and warehouse money
+  for each of them is what makes the discipline in `.agents/modeling.md`
+  expensive enough to skip. So the tables the models read are copied to local
+  Parquet, and the extraction is `@moradata/cache` rather than code here.
+  What makes this compatible with caching nothing else: it is explicit
+  (`mora sync`, never a timer, never implicit), it is gitignored, and every
+  result that touched it carries `local`, `syncedAt` and a capped-table warning.
+- **A probe defaults to the cache; a named definition does not.** This is the
+  reviewed/unreviewed split the tool already draws, applied to freshness. `-e`
+  and `-f` are unreviewed logic asking what is true of the data, nobody acts on
+  the answer, and there are many of them — a copy a few hours old buys real
+  speed and costs nothing that matters. `mora query <name>` is the answer
+  somebody acts on, and a number three days stale is worse than one that took
+  four seconds. `--local` and `--remote` override either way. Do not "simplify"
+  this into one default: making probes pay warehouse latency wastes the whole
+  feature, and letting named definitions go stale silently is the failure this
+  tool exists to prevent.
+- **A probe that the cache cannot answer retries against the warehouse, on any
+  error.** Matching the message was tried and is wrong: a missing table surfaces
+  as `Catalog Error` on a warehouse and as `IO Error: No files found` through
+  DuckDB's replacement scan, so a pattern tuned to one breaks the fallback
+  exactly where the cache is thinnest. Being generous hides nothing — if the
+  warehouse fails too, its error is the one reported, and that is the
+  authoritative one. The report says `fellBackToWarehouse` so the reader learns
+  the cache is missing something. `--local` opts out and gets the refusal.
+- **The cache lives at `.mora/cache/`, and `init` writes nothing for it.**
+  `.mora/` was already in the scaffolded `.gitignore`, so the data cannot be
+  committed by accident and no scaffold change was needed. There is no cache
+  config: the directory is a convention like `metrics/`, and a project that
+  never runs `mora sync` has nothing on disk and pays nothing.
+- **`mora sync --status` is a flag, not a seventh command.** Reporting what the
+  cache holds is the same report `sync` already produces, with `executed: false`
+  and an empty `synced`. A separate `mora cache status` would have been a second
+  command sharing one report shape and one manifest read.
 - **Knowing how to model is a doc, not a command.** `.agents/modeling.md` is
   owned like the other guides. Mora provides the facts — `schema` for what
   exists, `query -f` for what is true of it — and the judgement about which
